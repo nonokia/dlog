@@ -6,7 +6,9 @@
 //! Logic lives in the library (not `main`) so it can be unit-tested.
 
 pub mod cli;
+pub mod model;
 pub mod output;
+pub mod store;
 
 use clap::Parser;
 
