@@ -185,6 +185,44 @@ impl Store {
         Ok(())
     }
 
+    /// Seal staged decisions in one atomic step, stamping `binding` (§8.2, §8.3).
+    /// With `only = Some(ids)`, restrict to those ids (each must be staged);
+    /// otherwise seal every staged decision. All-or-nothing: if any target id is
+    /// unknown or already sealed, nothing is sealed. Returns the sealed ids.
+    pub fn seal_staged(
+        &self,
+        binding: &Binding,
+        only: Option<&[String]>,
+    ) -> rusqlite::Result<Vec<String>> {
+        let (binding_type, binding_sha) = match binding {
+            Binding::Commit { sha } => ("commit", Some(sha.as_str())),
+            Binding::None => ("none", None),
+        };
+
+        let tx = self.conn.unchecked_transaction()?;
+        let ids: Vec<String> = match only {
+            Some(list) => list.to_vec(),
+            None => {
+                let mut stmt =
+                    tx.prepare("SELECT id FROM decision WHERE staged = 1 ORDER BY id")?;
+                stmt.query_map([], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+            }
+        };
+        for id in &ids {
+            let changed = tx.execute(
+                "UPDATE decision SET staged = 0, binding_type = ?2, binding_sha = ?3
+                 WHERE id = ?1 AND staged = 1",
+                params![id, binding_type, binding_sha],
+            )?;
+            if changed == 0 {
+                return Err(rusqlite::Error::StatementChangedRows(0));
+            }
+        }
+        tx.commit()?;
+        Ok(ids)
+    }
+
     /// Fetch a decision (with its anchors) by id.
     pub fn get_decision(&self, id: &str) -> rusqlite::Result<Option<StoredDecision>> {
         let decision = self

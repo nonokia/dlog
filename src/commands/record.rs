@@ -4,15 +4,12 @@
 //! mutable staging area; binding happens later at seal time (#6). This handler
 //! maps CLI args to a [`NewDecision`], opens the store, and stages it.
 
-use std::path::{Path, PathBuf};
-
 use serde::Serialize;
 
 use crate::cli::RecordArgs;
-use crate::commands::AppError;
+use crate::commands::{AppError, open_store};
 use crate::model::{Agent, Anchor, NewDecision, Rejected};
 use crate::output::emit;
-use crate::store::Store;
 
 /// Success document for `dlog record`.
 #[derive(Debug, Serialize)]
@@ -51,13 +48,7 @@ pub fn run(args: RecordArgs) -> Result<(), AppError> {
         anchors,
     };
 
-    let db = resolve_db(args.db);
-    if let Some(parent) = db.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-    let store = Store::open(&db)?;
+    let store = open_store(args.db)?;
 
     // A decision may reference a task; make sure the row exists so the FK holds.
     if let Some(task_id) = decision.task_id.as_deref() {
@@ -78,12 +69,6 @@ pub fn run(args: RecordArgs) -> Result<(), AppError> {
         declared_invariants,
     });
     Ok(())
-}
-
-/// Resolve the store path: explicit `--db`/`$DLOG_DB`, else `.dlog/dlog.db`.
-fn resolve_db(arg: Option<String>) -> PathBuf {
-    arg.map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(".dlog").join("dlog.db"))
 }
 
 /// Parse an anchor spec: `FILE`, `FILE:LINE`, or `FILE:START-END`. The trailing
@@ -135,7 +120,10 @@ fn parse_rejected(spec: &str) -> Rejected {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use super::*;
+    use crate::store::Store;
 
     #[test]
     fn parse_anchor_plain_file() {

@@ -27,7 +27,7 @@ pub enum Command {
     /// Show full decisions by id (#10).
     Show,
     /// Seal staged decisions, binding them to a commit sha (#6).
-    Bind,
+    Bind(BindArgs),
     /// Report store state: unsealed staging, schema version (#10).
     Status,
     /// Full-text search over recorded decisions (#10).
@@ -41,7 +41,7 @@ impl Command {
             Command::Record(_) => "record",
             Command::Why => "why",
             Command::Show => "show",
-            Command::Bind => "bind",
+            Command::Bind(_) => "bind",
             Command::Status => "status",
             Command::Search => "search",
         }
@@ -112,6 +112,30 @@ pub struct RecordArgs {
     /// Scope (path) applied to declared invariants.
     #[arg(long = "invariant-scope", value_name = "PATH")]
     pub invariant_scope: Option<String>,
+
+    /// Store path. Defaults to $DLOG_DB, else `.dlog/dlog.db`.
+    #[arg(long = "db", env = "DLOG_DB")]
+    pub db: Option<String>,
+}
+
+/// Arguments for `dlog bind` (design §8.2, §8.3).
+///
+/// Seals staged decisions. Provide a commit SHA for the code path, or `--none`
+/// for the non-code path (investigation/review that led to no commit). By
+/// default all staged decisions are sealed; `--decision` restricts the set.
+#[derive(Debug, Args)]
+pub struct BindArgs {
+    /// Commit sha to bind staged decisions to. Omit when using --none.
+    #[arg(value_name = "SHA")]
+    pub sha: Option<String>,
+
+    /// Seal with binding {type:none} instead of a commit. Excludes SHA.
+    #[arg(long = "none", conflicts_with = "sha")]
+    pub none: bool,
+
+    /// Restrict to specific staged decision id(s). Default: all staged.
+    #[arg(long = "decision", value_name = "DECISION_ID")]
+    pub decisions: Vec<String>,
 
     /// Store path. Defaults to $DLOG_DB, else `.dlog/dlog.db`.
     #[arg(long = "db", env = "DLOG_DB")]
