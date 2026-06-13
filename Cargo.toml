@@ -1,0 +1,9 @@
+[package]
+name = "dlog"
+version = "0.1.0"
+edition = "2024"
+description = "Agent-first decision log that sits alongside Git"
+license = "MIT"
+repository = "https://github.com/nonokia/dlog"
+
+[dependencies]
