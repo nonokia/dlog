@@ -92,6 +92,19 @@ impl Store {
         Ok(id_str)
     }
 
+    /// Ensure a task row exists for `id` (used when a decision references a task
+    /// by id). No-op if the task already exists; the instruction is only set on
+    /// first creation.
+    pub fn ensure_task(&self, id: &str, instruction: Option<&str>) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO task(id, parent_task_id, instruction, created_at_ms)
+             VALUES(?1, NULL, ?2, ?3)
+             ON CONFLICT(id) DO NOTHING",
+            params![id, instruction, Ulid::new().timestamp_ms() as i64],
+        )?;
+        Ok(())
+    }
+
     // ---- Decisions --------------------------------------------------------
 
     /// Write a new decision into staging (§8.2) together with its anchors, in a
