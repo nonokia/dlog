@@ -30,7 +30,13 @@ pub fn run(args: RecordArgs) -> Result<(), AppError> {
         ));
     }
 
-    let anchors: Vec<Anchor> = args.files.iter().map(|s| parse_anchor(s)).collect();
+    let mut anchors: Vec<Anchor> = args.files.iter().map(|s| parse_anchor(s)).collect();
+    // Capture the AST-node observation now, while we're looking at the code
+    // (§10.2). Best-effort: anything that doesn't resolve stays a file-level
+    // anchor (§10.5), recording never fails because of it.
+    for anchor in &mut anchors {
+        enrich_rust_anchor(anchor);
+    }
     let rejected: Vec<Rejected> = args.rejected.iter().map(|s| parse_rejected(s)).collect();
 
     let decision = NewDecision {
@@ -71,10 +77,32 @@ pub fn run(args: RecordArgs) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Fill an anchor's `symbol_path` / `node_kind` / `structural_hash` from the
+/// enclosing Rust definition (§10.2), when the anchor names a readable `.rs`
+/// file with a line. Non-Rust files, unreadable paths, or lines not inside a
+/// definition are left as file-level anchors (§10.5).
+fn enrich_rust_anchor(anchor: &mut Anchor) {
+    let Some((line, _)) = anchor.line_span else {
+        return;
+    };
+    if !anchor.file.ends_with(".rs") {
+        return;
+    }
+    let Ok(source) = std::fs::read_to_string(&anchor.file) else {
+        return;
+    };
+    if let Some(def) = crate::anchor::definition_at_line(&source, line) {
+        anchor.symbol_path = Some(def.symbol_path);
+        anchor.node_kind = Some(def.node_kind);
+        anchor.structural_hash = Some(def.structural_hash);
+        anchor.line_span = Some(def.line_span);
+    }
+}
+
 /// Parse an anchor spec: `FILE`, `FILE:LINE`, or `FILE:START-END`. The trailing
 /// `:...` is only treated as a line span when it parses as one; otherwise the
-/// whole string is the path. Symbol/structural fields are left empty — that
-/// enrichment is the tree-sitter anchor work (#7).
+/// whole string is the path. Symbol/structural fields start empty and are filled
+/// by [`enrich_rust_anchor`] when the source is available.
 fn parse_anchor(spec: &str) -> Anchor {
     let (file, line_span) = match spec.rsplit_once(':') {
         Some((path, lines)) => match parse_line_spec(lines) {
@@ -218,5 +246,37 @@ mod tests {
         assert_eq!(d.task_id.as_deref(), Some("tsk_demo"));
 
         let _ = std::fs::remove_file(&db);
+    }
+
+    #[test]
+    fn record_enriches_anchor_from_rust_source() {
+        let dir = std::env::temp_dir().join(format!("dlog-src-{}", ulid::Ulid::new()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rs = dir.join("auth.rs");
+        std::fs::write(
+            &rs,
+            "impl AuthService {\n    fn authenticate(&self) -> bool {\n        true\n    }\n}\n",
+        )
+        .unwrap();
+
+        let db = temp_db();
+        let mut args = args_with_db(&db);
+        // Line 3 (`true`) is inside AuthService::authenticate.
+        args.files = vec![format!("{}:3", rs.display())];
+        run(args).expect("record should succeed");
+
+        let store = Store::open(&db).unwrap();
+        let id = &store.search("backoff").unwrap()[0];
+        let d = store.get_decision(id).unwrap().unwrap();
+        let anchor = &d.anchors[0];
+        assert_eq!(
+            anchor.symbol_path.as_deref(),
+            Some("AuthService::authenticate")
+        );
+        assert_eq!(anchor.node_kind.as_deref(), Some("method"));
+        assert!(anchor.structural_hash.is_some());
+
+        let _ = std::fs::remove_file(&db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
