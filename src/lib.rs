@@ -26,7 +26,7 @@ pub fn run() -> i32 {
         Command::Record(args) => commands::record::run(*args),
         Command::Why => Err(AppError::not_implemented("why", 9)),
         Command::Show => Err(AppError::not_implemented("show", 10)),
-        Command::Bind => Err(AppError::not_implemented("bind", 6)),
+        Command::Bind(args) => commands::bind::run(args),
         Command::Status => Err(AppError::not_implemented("status", 10)),
         Command::Search => Err(AppError::not_implemented("search", 10)),
     };
