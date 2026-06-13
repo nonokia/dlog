@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+# Least privilege: CI only needs to read the checked-out code.
+permissions:
+  contents: read
 
 # Cancel superseded runs on the same ref to save CI minutes.
 concurrency:
@@ -18,6 +23,7 @@ jobs:
   test:
     name: fmt / clippy / build / test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
