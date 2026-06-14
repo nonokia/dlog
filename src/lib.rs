@@ -5,6 +5,7 @@
 //! aren't implemented yet return a `not_implemented` error. Logic lives in the
 //! library (not `main`) so it can be unit-tested.
 
+pub mod anchor;
 pub mod cli;
 pub mod commands;
 pub mod model;
