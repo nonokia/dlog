@@ -10,6 +10,7 @@ pub mod cli;
 pub mod commands;
 pub mod model;
 pub mod output;
+pub mod resolve;
 pub mod store;
 
 use clap::Parser;
