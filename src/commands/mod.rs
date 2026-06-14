@@ -2,7 +2,11 @@
 //! dispatch table in `lib.rs` routes parsed args here.
 
 pub mod bind;
+pub mod compact;
 pub mod record;
+pub mod search;
+pub mod show;
+pub mod status;
 pub mod why;
 
 use std::path::{Path, PathBuf};

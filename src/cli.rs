@@ -25,13 +25,13 @@ pub enum Command {
     /// Explain the decisions behind a file:line or symbol (#9).
     Why(WhyArgs),
     /// Show full decisions by id (#10).
-    Show,
+    Show(ShowArgs),
     /// Seal staged decisions, binding them to a commit sha (#6).
     Bind(BindArgs),
     /// Report store state: unsealed staging, schema version (#10).
-    Status,
+    Status(StatusArgs),
     /// Full-text search over recorded decisions (#10).
-    Search,
+    Search(SearchArgs),
 }
 
 impl Command {
@@ -40,10 +40,10 @@ impl Command {
         match self {
             Command::Record(_) => "record",
             Command::Why(_) => "why",
-            Command::Show => "show",
+            Command::Show(_) => "show",
             Command::Bind(_) => "bind",
-            Command::Status => "status",
-            Command::Search => "search",
+            Command::Status(_) => "status",
+            Command::Search(_) => "search",
         }
     }
 }
@@ -142,6 +142,49 @@ pub struct WhyArgs {
     pub db: Option<String>,
 }
 
+/// Arguments for `dlog show` (design §9.1) — the drill-down after a compact
+/// query. Returns the full record for each id (rejected, anchors, declared
+/// invariants, binding).
+#[derive(Debug, Args)]
+pub struct ShowArgs {
+    /// Decision id(s) to show in full.
+    #[arg(value_name = "DECISION_ID", required = true)]
+    pub ids: Vec<String>,
+
+    /// Store path. Defaults to $DLOG_DB, else `.dlog/dlog.db`.
+    #[arg(long = "db", env = "DLOG_DB")]
+    pub db: Option<String>,
+}
+
+/// Arguments for `dlog status` (design §8.3, §9.2) — store-wide state.
+#[derive(Debug, Args)]
+pub struct StatusArgs {
+    /// Store path. Defaults to $DLOG_DB, else `.dlog/dlog.db`.
+    #[arg(long = "db", env = "DLOG_DB")]
+    pub db: Option<String>,
+}
+
+/// Arguments for `dlog search` (design §9.2) — full-text search (SQLite FTS5),
+/// returning the compact form.
+#[derive(Debug, Args)]
+pub struct SearchArgs {
+    /// Full-text query over decision rationale/rejected prose.
+    #[arg(long)]
+    pub text: String,
+
+    /// Include superseded decisions (default: live decisions only, §9.1).
+    #[arg(long = "include-superseded")]
+    pub include_superseded: bool,
+
+    /// Maximum results before truncating.
+    #[arg(long, default_value_t = 20)]
+    pub limit: usize,
+
+    /// Store path. Defaults to $DLOG_DB, else `.dlog/dlog.db`.
+    #[arg(long = "db", env = "DLOG_DB")]
+    pub db: Option<String>,
+}
+
 /// Arguments for `dlog bind` (design §8.2, §8.3).
 ///
 /// Seals staged decisions. Provide a commit SHA for the code path, or `--none`
@@ -172,9 +215,21 @@ mod tests {
 
     #[test]
     fn parses_argless_subcommands() {
-        for arg in ["show", "bind", "status", "search"] {
+        // status and bind have only optional args; the rest require operands.
+        for arg in ["status", "bind"] {
             let cli = Cli::try_parse_from(["dlog", arg]).expect("subcommand should parse");
             assert_eq!(cli.command.name(), arg);
+        }
+    }
+
+    #[test]
+    fn show_requires_ids_and_search_requires_text() {
+        assert!(Cli::try_parse_from(["dlog", "show"]).is_err());
+        assert!(Cli::try_parse_from(["dlog", "search"]).is_err());
+        let cli = Cli::try_parse_from(["dlog", "show", "dec_1", "dec_2"]).expect("show parses");
+        match cli.command {
+            Command::Show(args) => assert_eq!(args.ids, vec!["dec_1", "dec_2"]),
+            _ => panic!("expected show"),
         }
     }
 

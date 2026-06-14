@@ -13,8 +13,8 @@ use serde::Serialize;
 
 use crate::anchor;
 use crate::cli::WhyArgs;
+use crate::commands::compact::{self, CompactRow};
 use crate::commands::{AppError, open_store, parse_line_spec};
-use crate::model::Binding;
 use crate::output::{QueryEnvelope, Resolved as ResolvedHead, emit};
 use crate::resolve::{self, QueryNode};
 use crate::store::Store;
@@ -27,18 +27,6 @@ struct QueryDesc {
     target: String,
 }
 
-/// One compact result row (§9.1, §9.3).
-#[derive(Debug, Serialize)]
-struct ResultRow {
-    id: String,
-    rationale_summary: String,
-    binding: Option<Binding>,
-    staged: bool,
-    superseded: bool,
-    /// Record time, epoch milliseconds.
-    ts: i64,
-}
-
 pub fn run(args: WhyArgs) -> Result<(), AppError> {
     let store = open_store(args.db.clone())?;
     let envelope = build(&store, &args)?;
@@ -47,33 +35,16 @@ pub fn run(args: WhyArgs) -> Result<(), AppError> {
 }
 
 /// Core of `why`, separated from emission so it can be unit-tested.
-fn build(store: &Store, args: &WhyArgs) -> rusqlite::Result<QueryEnvelope<QueryDesc, ResultRow>> {
+fn build(store: &Store, args: &WhyArgs) -> rusqlite::Result<QueryEnvelope<QueryDesc, CompactRow>> {
     let query_node = build_query_node(&args.target);
     let resolved = resolve::resolve(store, &query_node)?;
 
-    let superseded = store.superseded_ids()?;
-    let mut results = Vec::new();
-    let mut live_matches = 0usize;
-    for id in &resolved.decisions {
-        let is_superseded = superseded.contains(id);
-        if is_superseded && !args.include_superseded {
-            continue;
-        }
-        live_matches += 1;
-        if results.len() >= args.limit {
-            continue;
-        }
-        if let Some(d) = store.get_decision(id)? {
-            results.push(ResultRow {
-                id: d.id,
-                rationale_summary: summarize(&d.rationale),
-                binding: d.binding,
-                staged: d.staged,
-                superseded: is_superseded,
-                ts: d.created_at_ms,
-            });
-        }
-    }
+    let (results, truncated) = compact::collect(
+        store,
+        &resolved.decisions,
+        args.include_superseded,
+        args.limit,
+    )?;
 
     let node = query_node
         .symbol_path
@@ -91,7 +62,7 @@ fn build(store: &Store, args: &WhyArgs) -> rusqlite::Result<QueryEnvelope<QueryD
             resolution: resolved.resolution,
         }),
         results,
-        truncated: live_matches > args.limit,
+        truncated,
     })
 }
 
@@ -122,18 +93,6 @@ fn node_for_file_line(path: &str, line: u32) -> QueryNode {
         return QueryNode::from_definition(path, &def);
     }
     QueryNode::file_level(path)
-}
-
-/// Compact the rationale to its first line, capped, for the two-stage form.
-fn summarize(rationale: &str) -> String {
-    const MAX: usize = 140;
-    let first_line = rationale.lines().next().unwrap_or("");
-    if first_line.chars().count() <= MAX {
-        first_line.to_string()
-    } else {
-        let head: String = first_line.chars().take(MAX).collect();
-        format!("{head}…")
-    }
 }
 
 #[cfg(test)]
