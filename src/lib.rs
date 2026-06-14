@@ -26,7 +26,7 @@ pub fn run() -> i32 {
 
     let result = match cli.command {
         Command::Record(args) => commands::record::run(*args),
-        Command::Why => Err(AppError::not_implemented("why", 9)),
+        Command::Why(args) => commands::why::run(args),
         Command::Show => Err(AppError::not_implemented("show", 10)),
         Command::Bind(args) => commands::bind::run(args),
         Command::Status => Err(AppError::not_implemented("status", 10)),

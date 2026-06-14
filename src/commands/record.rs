@@ -7,7 +7,7 @@
 use serde::Serialize;
 
 use crate::cli::RecordArgs;
-use crate::commands::{AppError, open_store};
+use crate::commands::{AppError, open_store, parse_line_spec};
 use crate::model::{Agent, Anchor, NewDecision, Rejected};
 use crate::output::emit;
 
@@ -118,16 +118,6 @@ fn parse_anchor(spec: &str) -> Anchor {
         structural_hash: None,
         line_span,
         recorded_at_sha: None,
-    }
-}
-
-fn parse_line_spec(s: &str) -> Option<(u32, u32)> {
-    match s.split_once('-') {
-        Some((a, b)) => Some((a.trim().parse().ok()?, b.trim().parse().ok()?)),
-        None => {
-            let n = s.trim().parse().ok()?;
-            Some((n, n))
-        }
     }
 }
 

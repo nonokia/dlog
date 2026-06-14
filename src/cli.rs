@@ -23,7 +23,7 @@ pub enum Command {
     // Boxed: RecordArgs is far larger than the other (unit) variants.
     Record(Box<RecordArgs>),
     /// Explain the decisions behind a file:line or symbol (#9).
-    Why,
+    Why(WhyArgs),
     /// Show full decisions by id (#10).
     Show,
     /// Seal staged decisions, binding them to a commit sha (#6).
@@ -39,7 +39,7 @@ impl Command {
     pub fn name(&self) -> &'static str {
         match self {
             Command::Record(_) => "record",
-            Command::Why => "why",
+            Command::Why(_) => "why",
             Command::Show => "show",
             Command::Bind(_) => "bind",
             Command::Status => "status",
@@ -118,6 +118,30 @@ pub struct RecordArgs {
     pub db: Option<String>,
 }
 
+/// Arguments for `dlog why` (design §9.1, §9.2).
+///
+/// `target` is a `file:line`, `file:start-end`, a bare file path, or a symbol
+/// path (e.g. `AuthService::authenticate`). Results are the compact form
+/// (two-stage retrieval, §9.1); the agent drills in with `dlog show <id>`.
+#[derive(Debug, Args)]
+pub struct WhyArgs {
+    /// What to explain: file:line, file:start-end, a file path, or a symbol.
+    #[arg(value_name = "FILE:LINE | SYMBOL")]
+    pub target: String,
+
+    /// Include superseded decisions (default: live decisions only, §9.1).
+    #[arg(long = "include-superseded")]
+    pub include_superseded: bool,
+
+    /// Maximum results before truncating.
+    #[arg(long, default_value_t = 20)]
+    pub limit: usize,
+
+    /// Store path. Defaults to $DLOG_DB, else `.dlog/dlog.db`.
+    #[arg(long = "db", env = "DLOG_DB")]
+    pub db: Option<String>,
+}
+
 /// Arguments for `dlog bind` (design §8.2, §8.3).
 ///
 /// Seals staged decisions. Provide a commit SHA for the code path, or `--none`
@@ -148,9 +172,19 @@ mod tests {
 
     #[test]
     fn parses_argless_subcommands() {
-        for arg in ["why", "show", "bind", "status", "search"] {
+        for arg in ["show", "bind", "status", "search"] {
             let cli = Cli::try_parse_from(["dlog", arg]).expect("subcommand should parse");
             assert_eq!(cli.command.name(), arg);
+        }
+    }
+
+    #[test]
+    fn why_requires_a_target() {
+        assert!(Cli::try_parse_from(["dlog", "why"]).is_err());
+        let cli = Cli::try_parse_from(["dlog", "why", "src/auth.rs:23"]).expect("why parses");
+        match cli.command {
+            Command::Why(args) => assert_eq!(args.target, "src/auth.rs:23"),
+            _ => panic!("expected why"),
         }
     }
 

@@ -336,6 +336,19 @@ impl Store {
         Ok(ids)
     }
 
+    /// The set of decision ids that have been superseded by a later decision
+    /// (§7.2). Used to exclude them from the default "live decisions" scope
+    /// (§9.1).
+    pub fn superseded_ids(&self) -> rusqlite::Result<std::collections::HashSet<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT supersedes FROM decision WHERE supersedes IS NOT NULL")?;
+        let ids = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+        Ok(ids)
+    }
+
     // ---- Invariants -------------------------------------------------------
 
     /// Declare an invariant, recording the decision that declared it (§7.1).
