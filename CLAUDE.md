@@ -4,12 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-This repository is **pre-implementation**. It currently contains only a design document
-(`agent-first-vcs-design.md`, written in Japanese) and a Rust-oriented `.gitignore`. There is
-no Cargo project, source code, or tests yet. The design has reached the "OpenSpec migration"
-stage — the *why* (design rationale) is settled and ready to be turned into specs and a Rust
-PoC. When implementing, treat `agent-first-vcs-design.md` as the source of truth for decisions
-already made; do not re-litigate settled choices listed in section 11 of that document.
+**v0.1 PoC is implemented.** The CLI works end-to-end — `record` + `why` plus the full
+staging/seal/binding flow, AST-node anchoring with query-time resolution (Rust), and the rest of
+the query surface (`show` / `status` / `search` / `invariants`). `agent-first-vcs-design.md`
+(written in Japanese) remains the **source of truth** for design decisions; do not re-litigate the
+settled choices listed in its section 11.
+
+Still out of scope (planned for later): the `dlog commit` wrapper, post-commit auto-binding,
+`dlog context` / `dlog trace`, context compression, and tree-sitter grammars other than Rust.
 
 ## What dlog is
 
@@ -26,13 +28,37 @@ branch surface.
 ## Planned tech stack (decided, not yet built)
 
 - **Language: Rust** — chosen for tree-sitter affinity and the CLI + SQLite + tree-sitter ecosystem.
-- **CLI: clap**, **serialization: serde**, **SQLite: rusqlite**.
+- **CLI: clap** (with `env` feature), **serialization: serde**, **SQLite: rusqlite** (`bundled`),
+  **ids: ulid**, **AST: tree-sitter + tree-sitter-rust**.
 - **No daemon**: each CLI invocation hits SQLite directly; concurrent writes are arbitrated by
   SQLite locking. No CRDT, no distributed sync.
 - **tree-sitter** is used directly (not difftastic) for AST node anchoring.
 
-Once a Cargo project exists, the standard toolchain applies: `cargo build`, `cargo test`
-(`cargo test <name>` for a single test), `cargo run -- <args>`, `cargo clippy`, `cargo fmt`.
+Standard toolchain: `cargo build`, `cargo test` (`cargo test <name>` for a single test),
+`cargo run -- <args>`, `cargo clippy`, `cargo fmt`. **CI gate** runs fmt + clippy + build + test
+with `RUSTFLAGS="-D warnings"`, so keep clippy clean.
+
+> **Dependency note:** `rusqlite` is pinned to **0.37** on purpose — 0.40 pulls `libsqlite3-sys`
+> 0.38, whose build script uses the still-unstable `cfg_select!` macro and fails on stable rustc.
+
+## Code layout (v0.1)
+
+- `src/main.rs` — thin entry point; maps `lib::run()` to a process exit code.
+- `src/lib.rs` — clap dispatch table; routes each subcommand to its handler.
+- `src/cli.rs` — clap argument structs (one per command).
+- `src/commands/` — one module per command (`record`, `bind`, `why`, `show`, `status`, `search`,
+  `invariants`), plus `compact` (shared two-stage result rows) and `mod` (shared `AppError`,
+  `open_store`, `parse_line_spec`). A command handler maps args → store/anchor calls → `emit` JSON.
+- `src/store.rs` + `src/schema.sql` — the SQLite layer (idempotent migrations). **Staging vs. main
+  log is one `decision` table with a `staged` flag, not two physical tables**; sealing flips the
+  flag and stamps the binding, and BEFORE UPDATE/DELETE triggers make sealed rows append-only.
+- `src/model.rs` — domain types (Decision/Anchor/Binding/Agent/...).
+- `src/anchor.rs` — **the only language-dependent code**: tree-sitter extraction of `symbol_path`
+  and `structural_hash` at record time (Rust). Everything else degrades to file-level (§10.5).
+- `src/resolve.rs` — query-time 2-axis resolution producing the `resolution` confidence.
+- `src/output.rs` — the JSON envelope / error / exit-code contract shared by all commands.
+- `templates/AGENTS.md` — instruction template shipped for agents that *use* dlog (distinct from
+  this file, which guides agents working *on* dlog).
 
 ## Architecture (the big picture)
 
@@ -106,8 +132,11 @@ Planned command surface: `dlog record`, `dlog why <file:line|symbol>`, `dlog sho
 `dlog context <path>`, `dlog trace <id>`, `dlog invariants`, `dlog search --text`, `dlog status`,
 `dlog bind <sha>`. Full-text search uses SQLite FTS5.
 
-## v0.1 PoC scope
-First milestone is a Rust project skeleton with `dlog record` + `dlog why` working. v0.1 includes
-the staging/main-log/binding schema and manual `dlog bind <sha>`. Out of scope for v0.1: context
-compression, the `dlog commit` wrapper, post-commit auto-binding, and any tree-sitter grammar other
+## v0.1 PoC scope (delivered)
+
+`dlog record` + `dlog why` work, on top of the staging/main-log/binding schema and manual
+`dlog bind <sha>`. Also delivered: the rest of the query surface (`show` / `status` / `search` /
+`invariants`), AST-node anchoring with query-time resolution (Rust only), and the agent instruction
+template (`templates/AGENTS.md`). Out of scope (later): context compression, the `dlog commit`
+wrapper, post-commit auto-binding, `dlog context` / `dlog trace`, and any tree-sitter grammar other
 than Rust.
