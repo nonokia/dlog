@@ -32,6 +32,8 @@ pub enum Command {
     Status(StatusArgs),
     /// Full-text search over recorded decisions (#10).
     Search(SearchArgs),
+    /// List live declared invariants (#21).
+    Invariants(InvariantsArgs),
 }
 
 impl Command {
@@ -44,6 +46,7 @@ impl Command {
             Command::Bind(_) => "bind",
             Command::Status(_) => "status",
             Command::Search(_) => "search",
+            Command::Invariants(_) => "invariants",
         }
     }
 }
@@ -179,6 +182,19 @@ pub struct SearchArgs {
     /// Maximum results before truncating.
     #[arg(long, default_value_t = 20)]
     pub limit: usize,
+
+    /// Store path. Defaults to $DLOG_DB, else `.dlog/dlog.db`.
+    #[arg(long = "db", env = "DLOG_DB")]
+    pub db: Option<String>,
+}
+
+/// Arguments for `dlog invariants` (design §7.1, §9.2) — list live invariants,
+/// optionally narrowed to a path scope.
+#[derive(Debug, Args)]
+pub struct InvariantsArgs {
+    /// Narrow to invariants in effect at, or within, this path.
+    #[arg(long, value_name = "PATH")]
+    pub scope: Option<String>,
 
     /// Store path. Defaults to $DLOG_DB, else `.dlog/dlog.db`.
     #[arg(long = "db", env = "DLOG_DB")]

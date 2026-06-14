@@ -14,6 +14,16 @@ pub const SCHEMA_VERSION: i64 = 1;
 
 const SCHEMA_SQL: &str = include_str!("schema.sql");
 
+/// A live invariant with provenance, returned by [`Store::list_live_invariants`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvariantRow {
+    pub id: String,
+    pub statement: String,
+    pub scope: Option<String>,
+    /// The decision that declared this invariant (§7.1).
+    pub declared_by: String,
+}
+
 /// Store-wide status, reported by `dlog status` (§9.2).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct StoreStatus {
@@ -381,6 +391,25 @@ impl Store {
             .prepare("SELECT id, statement FROM invariant WHERE retired = 0 ORDER BY id")?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Live (non-retired) invariants with provenance, for `dlog invariants`.
+    pub fn list_live_invariants(&self) -> rusqlite::Result<Vec<InvariantRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, statement, scope, declared_by
+             FROM invariant WHERE retired = 0 ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(InvariantRow {
+                    id: r.get(0)?,
+                    statement: r.get(1)?,
+                    scope: r.get(2)?,
+                    declared_by: r.get(3)?,
+                })
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }

@@ -3,6 +3,7 @@
 
 pub mod bind;
 pub mod compact;
+pub mod invariants;
 pub mod record;
 pub mod search;
 pub mod show;
