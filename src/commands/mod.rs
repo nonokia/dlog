@@ -3,11 +3,24 @@
 
 pub mod bind;
 pub mod record;
+pub mod why;
 
 use std::path::{Path, PathBuf};
 
 use crate::output::ErrorEnvelope;
 use crate::store::Store;
+
+/// Parse a line spec — `N` or `START-END` — into a 1-based inclusive span.
+/// Shared by anchor parsing (`record`) and query parsing (`why`).
+pub(crate) fn parse_line_spec(s: &str) -> Option<(u32, u32)> {
+    match s.split_once('-') {
+        Some((a, b)) => Some((a.trim().parse().ok()?, b.trim().parse().ok()?)),
+        None => {
+            let n = s.trim().parse().ok()?;
+            Some((n, n))
+        }
+    }
+}
 
 /// A command failure, carrying a stable machine `code` and a human message.
 /// Converted to an [`ErrorEnvelope`] for emission (design §9.3).
