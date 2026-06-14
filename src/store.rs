@@ -334,6 +334,21 @@ impl Store {
         Ok(ids)
     }
 
+    /// Distinct non-null `symbol_path`s among anchors with this structural_hash.
+    /// A global hash that spans more than one symbol is ambiguous, so the
+    /// resolver won't trust it as a `relocated` match (#28).
+    pub fn symbol_paths_for_hash(&self, structural_hash: &str) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT symbol_path FROM anchor
+             WHERE structural_hash = ?1 AND symbol_path IS NOT NULL
+             ORDER BY symbol_path",
+        )?;
+        let paths = stmt
+            .query_map(params![structural_hash], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(paths)
+    }
+
     /// Decisions with an anchor on this file (the `file_fallback` tier).
     pub fn decision_ids_by_file(&self, file: &str) -> rusqlite::Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
