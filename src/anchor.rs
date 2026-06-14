@@ -134,11 +134,38 @@ fn node_name(node: Node, src: &[u8]) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Stable FNV-1a hash of a node's normalised token stream.
+/// Stable FNV-1a hash of a node's normalised token stream, seeded with
+/// name-free structural discriminators (kind + parameter arity + return-type
+/// presence). The seed keeps rename-invariance — it never reads identifier or
+/// type *names* — while stopping trivially same-shaped nodes (e.g. two getters
+/// that differ only by field name) from colliding on the token stream alone
+/// (§10.3, issue #28).
 fn structural_hash(node: Node, src: &[u8]) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    fnv_write(&mut hash, node.kind().as_bytes());
+    fnv_write(&mut hash, b"\x1e");
+    fnv_write(&mut hash, &signature_shape(node).to_le_bytes());
+    fnv_write(&mut hash, b"\x1e");
     hash_tokens(node, src, &mut hash);
     format!("{hash:016x}")
+}
+
+/// A name-free shape signature: parameter count and whether a return type is
+/// present, packed into one integer. Non-functions have no parameters/return
+/// and shape `0`.
+fn signature_shape(node: Node) -> u32 {
+    let arity = node
+        .child_by_field_name("parameters")
+        .map(|params| {
+            let mut cursor = params.walk();
+            params
+                .children(&mut cursor)
+                .filter(|c| matches!(c.kind(), "parameter" | "self_parameter"))
+                .count() as u32
+        })
+        .unwrap_or(0);
+    let has_return = node.child_by_field_name("return_type").is_some();
+    (arity << 1) | has_return as u32
 }
 
 fn hash_tokens(node: Node, src: &[u8], hash: &mut u64) {
@@ -227,6 +254,21 @@ fn main() {}
         let a = "fn f(x: u32) -> u32 { let y = x + 1; y }";
         let b = "fn renamed(arg: u32) -> u32 { let out = arg + 1; out }";
         assert_eq!(hash_of_single_def(a), hash_of_single_def(b));
+    }
+
+    #[test]
+    fn structural_hash_distinguishes_arity_and_return() {
+        // Same token-shaped bodies but different signatures must not collide
+        // (the seed adds arity / return-type presence; #28).
+        let no_args = "fn f() { let x = 1; }";
+        let one_arg = "fn f(a: u32) { let x = 1; }";
+        let two_args = "fn f(a: u32, b: u32) { let x = 1; }";
+        assert_ne!(hash_of_single_def(no_args), hash_of_single_def(one_arg));
+        assert_ne!(hash_of_single_def(one_arg), hash_of_single_def(two_args));
+
+        let no_ret = "fn f(a: u32) { let x = 1; }";
+        let with_ret = "fn f(a: u32) -> u32 { let x = 1; }";
+        assert_ne!(hash_of_single_def(no_ret), hash_of_single_def(with_ret));
     }
 
     #[test]

@@ -87,8 +87,14 @@ pub fn resolve(store: &Store, query: &QueryNode) -> rusqlite::Result<Resolved> {
     }
 
     // relocated: a node with this exact structure exists under a different name
-    // or in a different file (global hash match, §10.3).
-    if let Some(hash) = &query.structural_hash {
+    // or in a different file (global hash match, §10.3). Only trust it when the
+    // hash identifies a *single* node — if it spans multiple distinct symbols the
+    // structural match is ambiguous (e.g. two trivial getters share a shape), so
+    // we fall through to file_fallback rather than surface a confidently-wrong
+    // decision (#28).
+    if let Some(hash) = &query.structural_hash
+        && store.symbol_paths_for_hash(hash)?.len() == 1
+    {
         let decisions = store.decision_ids_by_hash(hash)?;
         if !decisions.is_empty() {
             return Ok(Resolved {
@@ -185,6 +191,26 @@ mod tests {
         let got = resolve(&store, &q).unwrap();
         assert_eq!(got.resolution, Resolution::Relocated);
         assert_eq!(got.decisions, vec![id]);
+    }
+
+    #[test]
+    fn ambiguous_hash_does_not_relocate_and_degrades_to_file_fallback() {
+        // Two decisions on different symbols share one structural_hash (a
+        // structural collision, e.g. two trivial getters). A renamed-node query
+        // must NOT surface either as `relocated` (#28); it degrades to file
+        // level, which here has no anchors -> empty.
+        let store = Store::open_in_memory().unwrap();
+        seed(&store, "src/a.rs", Some("foo::bar"), Some("dup_hash"));
+        seed(&store, "src/b.rs", Some("baz::qux"), Some("dup_hash"));
+
+        let q = QueryNode {
+            file: Some("src/query.rs".into()),
+            symbol_path: Some("other::renamed".into()),
+            structural_hash: Some("dup_hash".into()),
+        };
+        let got = resolve(&store, &q).unwrap();
+        assert_eq!(got.resolution, Resolution::FileFallback);
+        assert!(got.decisions.is_empty(), "ambiguous match must not leak");
     }
 
     #[test]
