@@ -433,14 +433,19 @@ impl Store {
     // ---- Search & status --------------------------------------------------
 
     /// Full-text search over decision prose (§9.2), returning matching decision
-    /// ids best-first.
+    /// ids best-first. The raw query is normalised to quoted literal terms so
+    /// arbitrary agent input can't trip FTS5 syntax (operators, quotes, etc.).
     pub fn search(&self, query: &str) -> rusqlite::Result<Vec<String>> {
+        let match_query = fts5_literal_query(query);
+        if match_query.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut stmt = self.conn.prepare(
             "SELECT decision_id FROM decision_fts
              WHERE decision_fts MATCH ?1 ORDER BY rank",
         )?;
         let ids = stmt
-            .query_map(params![query], |r| r.get::<_, String>(0))?
+            .query_map(params![match_query], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(ids)
     }
@@ -463,6 +468,17 @@ impl Store {
             schema_version: self.schema_version()?,
         })
     }
+}
+
+/// Turn raw user text into an FTS5 query of quoted literal terms (implicit AND),
+/// so operators/quotes/punctuation in agent input can't cause syntax errors.
+/// Each whitespace-separated token becomes a `"..."` string with internal double
+/// quotes doubled. Empty input yields an empty query.
+fn fts5_literal_query(raw: &str) -> String {
+    raw.split_whitespace()
+        .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Serialize a slice to a JSON array string, or `None` when empty so the column
@@ -684,6 +700,28 @@ mod tests {
 
         let hits = store.search("backoff").unwrap();
         assert_eq!(hits, vec![id]);
+    }
+
+    #[test]
+    fn fts_query_with_special_chars_does_not_error() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store
+            .stage_decision(&minimal("use exponential backoff on errors"))
+            .unwrap();
+
+        // Operators / punctuation / unbalanced quotes must not raise a syntax
+        // error — they are normalised to literal terms.
+        store.search("backoff OR (retry)").unwrap();
+        store.search("\"unbalanced").unwrap();
+        store.search(":*foo").unwrap();
+
+        // Whitespace-only yields no results.
+        assert!(store.search("   ").unwrap().is_empty());
+
+        // A plain term still matches; multiple terms are implicit AND.
+        assert_eq!(store.search("backoff").unwrap(), vec![id.clone()]);
+        assert_eq!(store.search("backoff errors").unwrap(), vec![id]);
+        assert!(store.search("backoff missingword").unwrap().is_empty());
     }
 
     #[test]
