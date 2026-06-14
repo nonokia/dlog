@@ -16,7 +16,6 @@ pub mod store;
 use clap::Parser;
 
 use cli::{Cli, Command};
-use commands::AppError;
 use output::{EXIT_ERROR, EXIT_OK, emit};
 
 /// Parse argv, dispatch to the matching command, and return a process exit code.
@@ -27,10 +26,10 @@ pub fn run() -> i32 {
     let result = match cli.command {
         Command::Record(args) => commands::record::run(*args),
         Command::Why(args) => commands::why::run(args),
-        Command::Show => Err(AppError::not_implemented("show", 10)),
+        Command::Show(args) => commands::show::run(args),
         Command::Bind(args) => commands::bind::run(args),
-        Command::Status => Err(AppError::not_implemented("status", 10)),
-        Command::Search => Err(AppError::not_implemented("search", 10)),
+        Command::Status(args) => commands::status::run(args),
+        Command::Search(args) => commands::search::run(args),
     };
 
     match result {

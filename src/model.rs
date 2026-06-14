@@ -74,18 +74,26 @@ pub struct NewDecision {
 /// A decision as stored, including its lifecycle state. `staged == true` means it
 /// is still in the staging area (pending); once sealed it is immutable and
 /// carries a `binding`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct StoredDecision {
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     pub agent: Agent,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<String>,
     pub rationale: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rejected: Vec<Rejected>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub caused_by: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub supersedes: Option<String>,
     pub anchors: Vec<Anchor>,
     pub staged: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub binding: Option<Binding>,
+    /// Record time, epoch milliseconds.
+    #[serde(rename = "ts")]
     pub created_at_ms: i64,
 }

@@ -15,7 +15,7 @@ pub const SCHEMA_VERSION: i64 = 1;
 const SCHEMA_SQL: &str = include_str!("schema.sql");
 
 /// Store-wide status, reported by `dlog status` (§9.2).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct StoreStatus {
     /// Number of unsealed decisions sitting in staging.
     pub staging_count: i64,
@@ -381,6 +381,22 @@ impl Store {
             .prepare("SELECT id, statement FROM invariant WHERE retired = 0 ORDER BY id")?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Invariants declared by a decision as `(id, statement, scope)` (for `show`).
+    pub fn invariants_declared_by(
+        &self,
+        decision_id: &str,
+    ) -> rusqlite::Result<Vec<(String, String, Option<String>)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, statement, scope FROM invariant WHERE declared_by = ?1 ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map(params![decision_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
