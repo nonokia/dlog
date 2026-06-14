@@ -273,6 +273,69 @@ impl Store {
         Ok(anchors)
     }
 
+    // ---- Anchor resolution queries (#8) -----------------------------------
+    //
+    // These back the query-time 2-axis match (§10.3). Each returns distinct
+    // decision ids, newest-first (ULIDs are time-sortable). The structural_hash
+    // lookups are global/cross-file by design, so a moved node is still found.
+
+    /// Decisions with an anchor matching both symbol_path and structural_hash
+    /// (the `exact` tier).
+    pub fn decision_ids_by_symbol_and_hash(
+        &self,
+        symbol_path: &str,
+        structural_hash: &str,
+    ) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT decision_id FROM anchor
+             WHERE symbol_path = ?1 AND structural_hash = ?2
+             ORDER BY decision_id DESC",
+        )?;
+        let ids = stmt
+            .query_map(params![symbol_path, structural_hash], |r| {
+                r.get::<_, String>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
+    }
+
+    /// Decisions with an anchor on this symbol_path (the `drifted` tier).
+    pub fn decision_ids_by_symbol(&self, symbol_path: &str) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT decision_id FROM anchor
+             WHERE symbol_path = ?1 ORDER BY decision_id DESC",
+        )?;
+        let ids = stmt
+            .query_map(params![symbol_path], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
+    }
+
+    /// Decisions with an anchor of this structural_hash, across all files (the
+    /// `relocated` tier).
+    pub fn decision_ids_by_hash(&self, structural_hash: &str) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT decision_id FROM anchor
+             WHERE structural_hash = ?1 ORDER BY decision_id DESC",
+        )?;
+        let ids = stmt
+            .query_map(params![structural_hash], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
+    }
+
+    /// Decisions with an anchor on this file (the `file_fallback` tier).
+    pub fn decision_ids_by_file(&self, file: &str) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT decision_id FROM anchor
+             WHERE file = ?1 ORDER BY decision_id DESC",
+        )?;
+        let ids = stmt
+            .query_map(params![file], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
+    }
+
     // ---- Invariants -------------------------------------------------------
 
     /// Declare an invariant, recording the decision that declared it (§7.1).
