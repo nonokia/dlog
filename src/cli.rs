@@ -28,6 +28,8 @@ pub enum Command {
     Show(ShowArgs),
     /// Seal staged decisions, binding them to a commit sha (#6).
     Bind(BindArgs),
+    /// Run `git commit`, then seal staged decisions to the new commit (#26).
+    Commit(CommitArgs),
     /// Report store state: unsealed staging, schema version (#10).
     Status(StatusArgs),
     /// Full-text search over recorded decisions (#10).
@@ -44,6 +46,7 @@ impl Command {
             Command::Why(_) => "why",
             Command::Show(_) => "show",
             Command::Bind(_) => "bind",
+            Command::Commit(_) => "commit",
             Command::Status(_) => "status",
             Command::Search(_) => "search",
             Command::Invariants(_) => "invariants",
@@ -225,6 +228,28 @@ pub struct BindArgs {
     pub db: Option<String>,
 }
 
+/// Arguments for `dlog commit` (design §8.3; v0.2, #26). Runs `git commit` and
+/// seals staged decisions to the resulting commit. Put dlog flags before `--`;
+/// everything after is passed through to git, e.g. `dlog commit -- -m "msg"`.
+#[derive(Debug, Args)]
+pub struct CommitArgs {
+    /// Restrict the seal to specific staged decision id(s). Default: all staged.
+    #[arg(long = "decision", value_name = "DECISION_ID")]
+    pub decisions: Vec<String>,
+
+    /// Store path. Defaults to $DLOG_DB, else `.dlog/dlog.db`.
+    #[arg(long = "db", env = "DLOG_DB")]
+    pub db: Option<String>,
+
+    /// Arguments passed through to `git commit` (e.g. `-m "msg"`).
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "GIT_ARGS"
+    )]
+    pub git_args: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,6 +271,16 @@ mod tests {
         match cli.command {
             Command::Show(args) => assert_eq!(args.ids, vec!["dec_1", "dec_2"]),
             _ => panic!("expected show"),
+        }
+    }
+
+    #[test]
+    fn commit_captures_passthrough_git_args() {
+        let cli =
+            Cli::try_parse_from(["dlog", "commit", "--", "-m", "msg"]).expect("commit parses");
+        match cli.command {
+            Command::Commit(args) => assert_eq!(args.git_args, vec!["-m", "msg"]),
+            _ => panic!("expected commit"),
         }
     }
 

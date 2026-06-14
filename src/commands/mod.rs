@@ -2,6 +2,7 @@
 //! dispatch table in `lib.rs` routes parsed args here.
 
 pub mod bind;
+pub mod commit;
 pub mod compact;
 pub mod invariants;
 pub mod record;
@@ -84,4 +85,38 @@ pub(crate) fn open_store(db: Option<String>) -> Result<Store, AppError> {
         std::fs::create_dir_all(parent)?;
     }
     Ok(Store::open(&path)?)
+}
+
+/// The current git commit (`git rev-parse HEAD`) of the working directory, or
+/// `None` outside a git repo / when git is unavailable. Best-effort: commands
+/// that record the base commit must not depend on git. Shared by `record`
+/// (recorded_at_sha) and `commit` (sha to seal against).
+pub(crate) fn current_git_sha() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!sha.is_empty()).then_some(sha)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_git_sha_is_hex_when_present() {
+        // In a git checkout this is Some(hex); outside one it's None. Either is
+        // acceptable — we only assert the shape when present.
+        if let Some(sha) = current_git_sha() {
+            assert!(!sha.is_empty());
+            assert!(
+                sha.chars().all(|c| c.is_ascii_hexdigit()),
+                "sha should be hex: {sha}"
+            );
+        }
+    }
 }

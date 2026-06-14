@@ -28,6 +28,7 @@ pub fn run() -> i32 {
         Command::Why(args) => commands::why::run(args),
         Command::Show(args) => commands::show::run(args),
         Command::Bind(args) => commands::bind::run(args),
+        Command::Commit(args) => commands::commit::run(args),
         Command::Status(args) => commands::status::run(args),
         Command::Search(args) => commands::search::run(args),
         Command::Invariants(args) => commands::invariants::run(args),

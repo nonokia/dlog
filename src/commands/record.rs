@@ -7,7 +7,7 @@
 use serde::Serialize;
 
 use crate::cli::RecordArgs;
-use crate::commands::{AppError, open_store, parse_line_spec};
+use crate::commands::{AppError, current_git_sha, open_store, parse_line_spec};
 use crate::model::{Agent, Anchor, NewDecision, Rejected};
 use crate::output::emit;
 
@@ -81,21 +81,6 @@ pub fn run(args: RecordArgs) -> Result<(), AppError> {
         declared_invariants,
     });
     Ok(())
-}
-
-/// The current git commit (`git rev-parse HEAD`) of the working directory, or
-/// `None` outside a git repo / when git is unavailable. Best-effort: recording
-/// must not depend on git.
-fn current_git_sha() -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let sha = String::from_utf8(output.stdout).ok()?.trim().to_string();
-    (!sha.is_empty()).then_some(sha)
 }
 
 /// Fill an anchor's `symbol_path` / `node_kind` / `structural_hash` from the
@@ -195,19 +180,6 @@ mod tests {
         let r = parse_rejected("just the approach");
         assert_eq!(r.approach, "just the approach");
         assert_eq!(r.reason, "");
-    }
-
-    #[test]
-    fn current_git_sha_is_hex_when_present() {
-        // In a git checkout this is Some(hex); outside one it's None. Either is
-        // acceptable — we only assert the shape when present.
-        if let Some(sha) = current_git_sha() {
-            assert!(!sha.is_empty());
-            assert!(
-                sha.chars().all(|c| c.is_ascii_hexdigit()),
-                "sha should be hex: {sha}"
-            );
-        }
     }
 
     fn temp_db() -> PathBuf {
