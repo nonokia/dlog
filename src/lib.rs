@@ -33,6 +33,7 @@ pub fn run() -> i32 {
         Command::Search(args) => commands::search::run(args),
         Command::Invariants(args) => commands::invariants::run(args),
         Command::Hooks(args) => commands::hooks::run(args),
+        Command::Context(args) => commands::context::run(args),
     };
 
     match result {
