@@ -1,6 +1,6 @@
 # Tasks: Context Compression for Query Output
 
-- [ ] **Task 1 — Add `elided` to the query envelope**
+- [x] **Task 1 — Add `elided` to the query envelope**
 
   In `src/output.rs`, add `pub elided: usize` to `QueryEnvelope<Q, R>` (serialized
   after `truncated`).
@@ -10,7 +10,7 @@
   Verify: `cargo build` succeeds once callers are updated (Task 3); field appears
   in JSON.
 
-- [ ] **Task 2 — Budget + adaptive summary in the shared compact path**
+- [x] **Task 2 — Budget + adaptive summary in the shared compact path**
 
   In `src/commands/compact.rs`:
   - Add `ROW_OVERHEAD` (~96) and `SUMMARY_FLOOR` (48) consts; keep `SUMMARY_MAX`
@@ -27,7 +27,7 @@
 
   Verify: unit tests below.
 
-- [ ] **Task 3 — Thread budget/elided through why, context, search**
+- [x] **Task 3 — Thread budget/elided through why, context, search**
 
   Add `--budget <CHARS>` (default 4096) to `WhyArgs`, `ContextArgs`, `SearchArgs`
   in `src/cli.rs`. In `commands/{why,context,search}.rs`, pass the budget to
@@ -39,7 +39,7 @@
   Verify: `cargo build`; `dlog why <target> --budget 200` emits fewer/terser rows
   with `elided > 0` when there are many decisions.
 
-- [ ] **Task 4 — Tests**
+- [x] **Task 4 — Tests**
 
   In `src/commands/compact.rs` tests: a tight budget yields fewer rows than a
   large one; `elided` equals the number of omitted in-scope rows; `truncated`
@@ -51,7 +51,7 @@
 
   Verify: `cargo test --all-features` green.
 
-- [ ] **Task 5 — Docs + gate**
+- [x] **Task 5 — Docs + gate**
 
   Note `--budget` and the `elided` field in `templates/AGENTS.md` (queries
   section). Run the full CI gate.

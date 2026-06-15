@@ -31,7 +31,13 @@ fn build(
     args: &SearchArgs,
 ) -> rusqlite::Result<QueryEnvelope<SearchDesc, CompactRow>> {
     let ids = store.search(&args.text)?;
-    let (results, truncated) = compact::collect(store, &ids, args.include_superseded, args.limit)?;
+    let (results, truncated, elided) = compact::collect(
+        store,
+        &ids,
+        args.include_superseded,
+        args.limit,
+        args.budget,
+    )?;
     Ok(QueryEnvelope {
         query: SearchDesc {
             kind: "search",
@@ -41,6 +47,7 @@ fn build(
         resolved: None,
         results,
         truncated,
+        elided,
     })
 }
 
@@ -86,6 +93,7 @@ mod tests {
             text: text.into(),
             include_superseded: false,
             limit: 20,
+            budget: 0,
             db: Some(db.to_string_lossy().into_owned()),
         }
     }

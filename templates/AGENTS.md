@@ -154,6 +154,12 @@ Superseded decisions are hidden by default; add `--include-superseded` to
 `why`/`search` for history. Staging is included by default and flagged
 `"staged": true`.
 
+Results are bounded to a context budget: `why`/`context`/`search` take
+`--budget <CHARS>` (default 4096; `0` = unbounded). When results don't all fit,
+they are emitted newest-first with shorter summaries and the envelope reports
+`"elided": N` (how many live results were left out) alongside `"truncated"`.
+Widen the budget, or `dlog show <id>` for the full record.
+
 ## Harness integration (optional)
 
 dlog doesn't force you to record — it lowers the cost and the harness can nudge.

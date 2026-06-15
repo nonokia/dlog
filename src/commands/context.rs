@@ -33,7 +33,13 @@ fn build(
     args: &ContextArgs,
 ) -> rusqlite::Result<QueryEnvelope<ContextDesc, CompactRow>> {
     let ids = store.decision_ids_under_path(&args.path)?;
-    let (results, truncated) = compact::collect(store, &ids, args.include_superseded, args.limit)?;
+    let (results, truncated, elided) = compact::collect(
+        store,
+        &ids,
+        args.include_superseded,
+        args.limit,
+        args.budget,
+    )?;
     Ok(QueryEnvelope {
         query: ContextDesc {
             kind: "context",
@@ -43,6 +49,7 @@ fn build(
         resolved: None,
         results,
         truncated,
+        elided,
     })
 }
 
@@ -88,6 +95,7 @@ mod tests {
             path: path.into(),
             include_superseded: false,
             limit: 20,
+            budget: 0,
             db: Some(db.to_string_lossy().into_owned()),
         }
     }
