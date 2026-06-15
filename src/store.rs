@@ -361,6 +361,23 @@ impl Store {
         Ok(ids)
     }
 
+    /// Decisions with an anchor at `path` (an exact file) or anywhere under it
+    /// (a directory), newest-first. Backs `dlog context <path>` (#30). The `/`
+    /// boundary means `src/au` never matches `src/auth/...`; LIKE metacharacters
+    /// in the path are escaped so they match literally.
+    pub fn decision_ids_under_path(&self, path: &str) -> rusqlite::Result<Vec<String>> {
+        let under = format!("{}/%", like_escape(path));
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT decision_id FROM anchor
+             WHERE file = ?1 OR file LIKE ?2 ESCAPE '\\'
+             ORDER BY decision_id DESC",
+        )?;
+        let ids = stmt
+            .query_map(params![path, under], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
+    }
+
     /// The set of decision ids that have been superseded by a later decision
     /// (§7.2). Used to exclude them from the default "live decisions" scope
     /// (§9.1).
@@ -494,6 +511,14 @@ fn fts5_literal_query(raw: &str) -> String {
         .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Escape SQL LIKE metacharacters (`\`, `%`, `_`) so a string matches literally
+/// under `LIKE ... ESCAPE '\'`.
+fn like_escape(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 /// Serialize a slice to a JSON array string, or `None` when empty so the column

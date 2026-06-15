@@ -38,6 +38,8 @@ pub enum Command {
     Invariants(InvariantsArgs),
     /// Install/uninstall the git post-commit auto-seal hook (#27).
     Hooks(HooksArgs),
+    /// Summarize the decisions for a file or directory (#30).
+    Context(ContextArgs),
 }
 
 impl Command {
@@ -53,6 +55,7 @@ impl Command {
             Command::Search(_) => "search",
             Command::Invariants(_) => "invariants",
             Command::Hooks(_) => "hooks",
+            Command::Context(_) => "context",
         }
     }
 }
@@ -137,6 +140,27 @@ pub struct WhyArgs {
     /// What to explain: file:line, file:start-end, a file path, or a symbol.
     #[arg(value_name = "FILE:LINE | SYMBOL")]
     pub target: String,
+
+    /// Include superseded decisions (default: live decisions only, §9.1).
+    #[arg(long = "include-superseded")]
+    pub include_superseded: bool,
+
+    /// Maximum results before truncating.
+    #[arg(long, default_value_t = 20)]
+    pub limit: usize,
+
+    /// Store path. Defaults to $DLOG_DB, else `.dlog/dlog.db`.
+    #[arg(long = "db", env = "DLOG_DB")]
+    pub db: Option<String>,
+}
+
+/// Arguments for `dlog context` (design §3, §9; v0.2, #30) — the compact
+/// decision summary for a file, or for everything under a directory.
+#[derive(Debug, Args)]
+pub struct ContextArgs {
+    /// File or directory to summarize decisions for.
+    #[arg(value_name = "PATH")]
+    pub path: String,
 
     /// Include superseded decisions (default: live decisions only, §9.1).
     #[arg(long = "include-superseded")]
@@ -301,6 +325,16 @@ mod tests {
         match cli.command {
             Command::Show(args) => assert_eq!(args.ids, vec!["dec_1", "dec_2"]),
             _ => panic!("expected show"),
+        }
+    }
+
+    #[test]
+    fn context_requires_a_path() {
+        assert!(Cli::try_parse_from(["dlog", "context"]).is_err());
+        let cli = Cli::try_parse_from(["dlog", "context", "src/auth"]).expect("context parses");
+        match cli.command {
+            Command::Context(args) => assert_eq!(args.path, "src/auth"),
+            _ => panic!("expected context"),
         }
     }
 
