@@ -378,6 +378,22 @@ impl Store {
         Ok(ids)
     }
 
+    /// Decisions that list `decision_id` in their `caused_by` — the ones it
+    /// directly caused (downstream edges of the DAG, §4). Backs `dlog trace`
+    /// (#31). Newest-first.
+    pub fn decision_ids_caused_by(&self, decision_id: &str) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT d.id
+             FROM decision d, json_each(d.caused_by) je
+             WHERE d.caused_by IS NOT NULL AND je.value = ?1
+             ORDER BY d.id DESC",
+        )?;
+        let ids = stmt
+            .query_map(params![decision_id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
+    }
+
     /// The set of decision ids that have been superseded by a later decision
     /// (§7.2). Used to exclude them from the default "live decisions" scope
     /// (§9.1).
