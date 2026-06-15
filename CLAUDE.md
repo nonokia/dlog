@@ -4,11 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-**v0.1 PoC is implemented.** The CLI works end-to-end — `record` + `why` plus the full
-staging/seal/binding flow, AST-node anchoring with query-time resolution (Rust), and the rest of
-the query surface (`show` / `status` / `search` / `invariants`). `agent-first-vcs-design.md`
-(written in Japanese) remains the **source of truth** for design decisions; do not re-litigate the
-settled choices listed in its section 11.
+**v0.1 PoC is implemented**, and much of v0.2 (`dlog commit` / post-commit hook, `context` /
+`trace`, TypeScript anchoring, record ergonomics). The CLI works end-to-end — `record` + `why`
+plus the full staging/seal/binding flow, AST-node anchoring with query-time resolution, and the
+rest of the query surface (`show` / `status` / `search` / `invariants` / `context` / `trace`).
+`agent-first-vcs-design.md` (written in Japanese) remains the **source of truth** for design
+decisions; do not re-litigate the settled choices listed in its section 11.
+
+**Workflow:** OpenSpec is adopted from the `context-compression` change onward (design §12) —
+change proposals live in `openspec/changes/<name>/` (`proposal.md` / `design.md` / `tasks.md`),
+config in `openspec/config.yaml`. Earlier v0.1/v0.2 work was tracked as GitHub issues + per-issue
+PRs and is not retro-specced.
 
 Still out of scope (planned for later): the `dlog commit` wrapper, post-commit auto-binding,
 `dlog context` / `dlog trace`, context compression, and tree-sitter grammars other than Rust.

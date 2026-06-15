@@ -157,6 +157,12 @@ pub struct WhyArgs {
     #[arg(long, default_value_t = 20)]
     pub limit: usize,
 
+    /// Approx character budget for the results payload (0 = unbounded). Bounds
+    /// output to the agent's context window; omitted results are reported as
+    /// `elided` (#33).
+    #[arg(long, default_value_t = 4096)]
+    pub budget: usize,
+
     /// Store path. Defaults to $DLOG_DB, else `.dlog/dlog.db`.
     #[arg(long = "db", env = "DLOG_DB")]
     pub db: Option<String>,
@@ -177,6 +183,10 @@ pub struct ContextArgs {
     /// Maximum results before truncating.
     #[arg(long, default_value_t = 20)]
     pub limit: usize,
+
+    /// Approx character budget for the results payload (0 = unbounded, #33).
+    #[arg(long, default_value_t = 4096)]
+    pub budget: usize,
 
     /// Store path. Defaults to $DLOG_DB, else `.dlog/dlog.db`.
     #[arg(long = "db", env = "DLOG_DB")]
@@ -237,6 +247,10 @@ pub struct SearchArgs {
     /// Maximum results before truncating.
     #[arg(long, default_value_t = 20)]
     pub limit: usize,
+
+    /// Approx character budget for the results payload (0 = unbounded, #33).
+    #[arg(long, default_value_t = 4096)]
+    pub budget: usize,
 
     /// Store path. Defaults to $DLOG_DB, else `.dlog/dlog.db`.
     #[arg(long = "db", env = "DLOG_DB")]

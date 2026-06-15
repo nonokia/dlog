@@ -39,11 +39,12 @@ fn build(store: &Store, args: &WhyArgs) -> rusqlite::Result<QueryEnvelope<QueryD
     let query_node = build_query_node(&args.target);
     let resolved = resolve::resolve(store, &query_node)?;
 
-    let (results, truncated) = compact::collect(
+    let (results, truncated, elided) = compact::collect(
         store,
         &resolved.decisions,
         args.include_superseded,
         args.limit,
+        args.budget,
     )?;
 
     let node = query_node
@@ -63,6 +64,7 @@ fn build(store: &Store, args: &WhyArgs) -> rusqlite::Result<QueryEnvelope<QueryD
         }),
         results,
         truncated,
+        elided,
     })
 }
 
@@ -143,6 +145,7 @@ mod tests {
             target: target.into(),
             include_superseded: false,
             limit: 20,
+            budget: 0,
             db: Some(db.to_string_lossy().into_owned()),
         }
     }

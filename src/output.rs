@@ -52,6 +52,9 @@ pub struct QueryEnvelope<Q, R> {
     pub resolved: Option<Resolved>,
     pub results: Vec<R>,
     pub truncated: bool,
+    /// Count of in-scope (live) results omitted by the budget/limit (§9.1
+    /// principle 2: state, not a suggestion). 0 when nothing was dropped.
+    pub elided: usize,
 }
 
 /// Anchor-resolution metadata surfaced alongside query results (§9.3).
@@ -109,6 +112,7 @@ mod tests {
             resolved: None,
             results: vec![],
             truncated: false,
+            elided: 0,
         };
         let v = serde_json::to_value(&env).unwrap();
         assert!(v.get("resolved").is_none());
