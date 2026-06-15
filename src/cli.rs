@@ -4,7 +4,7 @@
 //! that owns each one fleshes out its arguments. `record` (#5) is the first with
 //! a real argument surface.
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -36,6 +36,8 @@ pub enum Command {
     Search(SearchArgs),
     /// List live declared invariants (#21).
     Invariants(InvariantsArgs),
+    /// Install/uninstall the git post-commit auto-seal hook (#27).
+    Hooks(HooksArgs),
 }
 
 impl Command {
@@ -50,6 +52,7 @@ impl Command {
             Command::Status(_) => "status",
             Command::Search(_) => "search",
             Command::Invariants(_) => "invariants",
+            Command::Hooks(_) => "hooks",
         }
     }
 }
@@ -202,6 +205,33 @@ pub struct InvariantsArgs {
     /// Store path. Defaults to $DLOG_DB, else `.dlog/dlog.db`.
     #[arg(long = "db", env = "DLOG_DB")]
     pub db: Option<String>,
+}
+
+/// What `dlog hooks` should do to the post-commit hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum HookAction {
+    /// Install the auto-seal post-commit hook.
+    Install,
+    /// Remove the managed post-commit hook block.
+    Uninstall,
+}
+
+impl HookAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HookAction::Install => "install",
+            HookAction::Uninstall => "uninstall",
+        }
+    }
+}
+
+/// Arguments for `dlog hooks` (design §8.3; v0.2, #27) — manage the repo-side
+/// post-commit hook that auto-seals staging after a plain `git commit`.
+#[derive(Debug, Args)]
+pub struct HooksArgs {
+    /// Whether to install or uninstall the hook.
+    #[arg(value_enum)]
+    pub action: HookAction,
 }
 
 /// Arguments for `dlog bind` (design §8.2, §8.3).
