@@ -36,7 +36,13 @@ pub fn run(args: HooksArgs) -> Result<(), AppError> {
         HookAction::Install => {
             let bin =
                 std::env::current_exe().map_err(|e| AppError::new("no_exe_path", e.to_string()))?;
-            install(&hook_path, &bin.to_string_lossy())?
+            // Bake an absolute store path only when one is configured, so the
+            // hook targets the right store even if a commit happens from an
+            // environment without $DLOG_DB. With no explicit store the hook
+            // omits --db and uses the default `.dlog/dlog.db` relative to the
+            // repo root, which survives the repo being moved.
+            let db = args.db.as_deref().map(absolute_db);
+            install(&hook_path, &bin.to_string_lossy(), db.as_deref())?
         }
         HookAction::Uninstall => uninstall(&hook_path)?,
     };
@@ -65,14 +71,31 @@ fn git_hooks_dir() -> Result<PathBuf, AppError> {
     Ok(PathBuf::from(dir))
 }
 
-/// The managed hook block, invoking this dlog binary by absolute path so the
-/// hook works regardless of `PATH`.
-fn managed_block(bin: &str) -> String {
-    format!("{BEGIN}\n\"{bin}\" bind \"$(git rev-parse HEAD)\" >/dev/null 2>&1 || true\n{END}\n")
+/// Absolutize a store path (lexically, without touching the filesystem) so the
+/// hook isn't sensitive to the cwd at commit time.
+fn absolute_db(path: &str) -> String {
+    let p = PathBuf::from(path);
+    std::path::absolute(&p)
+        .unwrap_or(p)
+        .to_string_lossy()
+        .into_owned()
 }
 
-fn install(hook_path: &Path, bin: &str) -> std::io::Result<&'static str> {
-    let block = managed_block(bin);
+/// The managed hook block, invoking this dlog binary by absolute path so the
+/// hook works regardless of `PATH`. When `db` is set, it is baked in so the hook
+/// always targets that store.
+fn managed_block(bin: &str, db: Option<&str>) -> String {
+    let db_arg = match db {
+        Some(path) => format!(" --db \"{path}\""),
+        None => String::new(),
+    };
+    format!(
+        "{BEGIN}\n\"{bin}\" bind{db_arg} \"$(git rev-parse HEAD)\" >/dev/null 2>&1 || true\n{END}\n"
+    )
+}
+
+fn install(hook_path: &Path, bin: &str, db: Option<&str>) -> std::io::Result<&'static str> {
+    let block = managed_block(bin, db);
     if hook_path.exists() {
         let existing = std::fs::read_to_string(hook_path)?;
         if existing.contains(BEGIN) {
@@ -155,16 +178,29 @@ mod tests {
     #[test]
     fn install_creates_then_is_idempotent() {
         let path = temp_hook();
-        assert_eq!(install(&path, "/usr/bin/dlog").unwrap(), "installed");
+        assert_eq!(install(&path, "/usr/bin/dlog", None).unwrap(), "installed");
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.starts_with("#!/bin/sh"));
         assert!(content.contains(BEGIN) && content.contains(END));
         assert!(content.contains("/usr/bin/dlog"));
+        assert!(!content.contains("--db"), "no --db when none configured");
 
         // Second install is a no-op.
         assert_eq!(
-            install(&path, "/usr/bin/dlog").unwrap(),
+            install(&path, "/usr/bin/dlog", None).unwrap(),
             "already_installed"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn install_bakes_db_path_when_configured() {
+        let path = temp_hook();
+        install(&path, "/usr/bin/dlog", Some("/abs/store.db")).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("--db \"/abs/store.db\""),
+            "configured store baked into the hook: {content}"
         );
         let _ = std::fs::remove_file(&path);
     }
@@ -174,7 +210,7 @@ mod tests {
         let path = temp_hook();
         std::fs::write(&path, "#!/bin/sh\necho existing\n").unwrap();
 
-        assert_eq!(install(&path, "/usr/bin/dlog").unwrap(), "appended");
+        assert_eq!(install(&path, "/usr/bin/dlog", None).unwrap(), "appended");
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("echo existing"), "user hook preserved");
         assert!(content.contains(BEGIN));
@@ -190,7 +226,7 @@ mod tests {
     #[test]
     fn uninstall_removes_file_when_only_ours() {
         let path = temp_hook();
-        install(&path, "/usr/bin/dlog").unwrap();
+        install(&path, "/usr/bin/dlog", None).unwrap();
         assert_eq!(uninstall(&path).unwrap(), "removed");
         assert!(!path.exists(), "file removed when nothing else remained");
     }
