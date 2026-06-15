@@ -1,0 +1,27 @@
+schema: spec-driven
+
+# Project context (shown to AI when creating artifacts).
+context: |
+  dlog — an agent-first decision log: a Rust CLI (clap), JSON in/out, SQLite
+  (rusqlite, bundled), tree-sitter for AST anchoring. It sits alongside Git and
+  records the *decisions* behind code. v0.1 plus most of v0.2 has shipped.
+
+  The source of truth for design decisions is `agent-first-vcs-design.md`
+  (Japanese); do not re-litigate the settled choices in its section 11. Module
+  layout and conventions are in `CLAUDE.md`. Queries return compact rows via
+  `src/commands/compact.rs`; the JSON envelope is in `src/output.rs`.
+
+  CI gate: `cargo fmt --all -- --check`, `cargo clippy --all-targets
+  --all-features` with `RUSTFLAGS="-D warnings"`, and `cargo test --all-features`.
+
+  OpenSpec is adopted from this change onward (design §12); earlier work was
+  tracked as GitHub issues/PRs and is not retro-specced.
+
+# Per-artifact rules.
+rules:
+  proposal:
+    - Reference the design sections (e.g. §9.1) the change relates to.
+    - Include a "Non-goals" section.
+  tasks:
+    - Each task names the files it touches and a concrete verify step.
+    - Keep the CI gate green (fmt / clippy -D warnings / test).
