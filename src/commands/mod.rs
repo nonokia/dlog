@@ -4,6 +4,7 @@
 pub mod bind;
 pub mod commit;
 pub mod compact;
+pub mod hooks;
 pub mod invariants;
 pub mod record;
 pub mod search;
