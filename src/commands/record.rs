@@ -53,7 +53,7 @@ pub fn run(args: RecordArgs) -> Result<(), AppError> {
     // (§10.2). Best-effort: anything that doesn't resolve stays a file-level
     // anchor (§10.5), recording never fails because of it.
     for anchor in &mut anchors {
-        enrich_rust_anchor(anchor);
+        enrich_anchor(anchor);
         if anchor.recorded_at_sha.is_none() {
             anchor.recorded_at_sha = recorded_at_sha.clone();
         }
@@ -157,20 +157,20 @@ fn parse_porcelain(text: &str) -> Vec<String> {
 }
 
 /// Fill an anchor's `symbol_path` / `node_kind` / `structural_hash` from the
-/// enclosing Rust definition (§10.2), when the anchor names a readable `.rs`
-/// file with a line. Non-Rust files, unreadable paths, or lines not inside a
-/// definition are left as file-level anchors (§10.5).
-fn enrich_rust_anchor(anchor: &mut Anchor) {
+/// enclosing definition (§10.2), when the anchor names a readable file in a
+/// supported language with a line. Unsupported languages, unreadable paths, or
+/// lines not inside a definition are left as file-level anchors (§10.5).
+fn enrich_anchor(anchor: &mut Anchor) {
     let Some((line, _)) = anchor.line_span else {
         return;
     };
-    if !anchor.file.ends_with(".rs") {
+    let Some(lang) = crate::anchor::language_for_path(&anchor.file) else {
         return;
-    }
+    };
     let Ok(source) = std::fs::read_to_string(&anchor.file) else {
         return;
     };
-    if let Some(def) = crate::anchor::definition_at_line(&source, line) {
+    if let Some(def) = crate::anchor::definition_at_line(&source, line, lang) {
         anchor.symbol_path = Some(def.symbol_path);
         anchor.node_kind = Some(def.node_kind);
         anchor.structural_hash = Some(def.structural_hash);

@@ -86,9 +86,9 @@ fn build_query_node(target: &str) -> QueryNode {
 }
 
 fn node_for_file_line(path: &str, line: u32) -> QueryNode {
-    if path.ends_with(".rs")
+    if let Some(lang) = anchor::language_for_path(path)
         && let Ok(source) = std::fs::read_to_string(path)
-        && let Some(def) = anchor::definition_at_line(&source, line)
+        && let Some(def) = anchor::definition_at_line(&source, line, lang)
     {
         return QueryNode::from_definition(path, &def);
     }
