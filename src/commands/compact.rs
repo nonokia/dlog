@@ -4,7 +4,7 @@
 
 use serde::Serialize;
 
-use crate::model::Binding;
+use crate::model::{Binding, StoredDecision};
 use crate::store::Store;
 
 /// One compact result row (§9.3).
@@ -53,6 +53,19 @@ pub(crate) fn collect(
         }
     }
     Ok((rows, live_matches > limit))
+}
+
+/// Build a single compact row from an already-fetched decision (used by `trace`,
+/// which walks the DAG node by node rather than from an id list).
+pub(crate) fn row_from(decision: StoredDecision, superseded: bool) -> CompactRow {
+    CompactRow {
+        rationale_summary: summarize(&decision.rationale),
+        id: decision.id,
+        binding: decision.binding,
+        staged: decision.staged,
+        superseded,
+        ts: decision.created_at_ms,
+    }
 }
 
 /// Compact the rationale to its first line, capped, for the two-stage form.

@@ -34,6 +34,7 @@ pub fn run() -> i32 {
         Command::Invariants(args) => commands::invariants::run(args),
         Command::Hooks(args) => commands::hooks::run(args),
         Command::Context(args) => commands::context::run(args),
+        Command::Trace(args) => commands::trace::run(args),
     };
 
     match result {

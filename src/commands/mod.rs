@@ -11,6 +11,7 @@ pub mod record;
 pub mod search;
 pub mod show;
 pub mod status;
+pub mod trace;
 pub mod why;
 
 use std::path::{Path, PathBuf};

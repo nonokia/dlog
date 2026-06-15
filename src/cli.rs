@@ -40,6 +40,8 @@ pub enum Command {
     Hooks(HooksArgs),
     /// Summarize the decisions for a file or directory (#30).
     Context(ContextArgs),
+    /// Walk the causal DAG (caused_by) around a decision (#31).
+    Trace(TraceArgs),
 }
 
 impl Command {
@@ -56,6 +58,7 @@ impl Command {
             Command::Invariants(_) => "invariants",
             Command::Hooks(_) => "hooks",
             Command::Context(_) => "context",
+            Command::Trace(_) => "trace",
         }
     }
 }
@@ -169,6 +172,23 @@ pub struct ContextArgs {
     /// Maximum results before truncating.
     #[arg(long, default_value_t = 20)]
     pub limit: usize,
+
+    /// Store path. Defaults to $DLOG_DB, else `.dlog/dlog.db`.
+    #[arg(long = "db", env = "DLOG_DB")]
+    pub db: Option<String>,
+}
+
+/// Arguments for `dlog trace` (design §4, §9; v0.2, #31) — walk the causal DAG
+/// (`caused_by`) up (causes) and down (effects) from a decision.
+#[derive(Debug, Args)]
+pub struct TraceArgs {
+    /// Decision id to trace from.
+    #[arg(value_name = "DECISION_ID")]
+    pub id: String,
+
+    /// How many DAG levels to walk in each direction.
+    #[arg(long, default_value_t = 10)]
+    pub depth: usize,
 
     /// Store path. Defaults to $DLOG_DB, else `.dlog/dlog.db`.
     #[arg(long = "db", env = "DLOG_DB")]
@@ -331,6 +351,19 @@ mod tests {
         match cli.command {
             Command::Show(args) => assert_eq!(args.ids, vec!["dec_1", "dec_2"]),
             _ => panic!("expected show"),
+        }
+    }
+
+    #[test]
+    fn trace_requires_an_id_with_default_depth() {
+        assert!(Cli::try_parse_from(["dlog", "trace"]).is_err());
+        let cli = Cli::try_parse_from(["dlog", "trace", "dec_1"]).expect("trace parses");
+        match cli.command {
+            Command::Trace(args) => {
+                assert_eq!(args.id, "dec_1");
+                assert_eq!(args.depth, 10);
+            }
+            _ => panic!("expected trace"),
         }
     }
 
