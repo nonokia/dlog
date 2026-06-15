@@ -256,6 +256,12 @@ pub struct HooksArgs {
     /// Whether to install or uninstall the hook.
     #[arg(value_enum)]
     pub action: HookAction,
+
+    /// Store path to bake into the hook. When set (or via $DLOG_DB at install
+    /// time) the hook targets this store regardless of the committing
+    /// environment; otherwise it uses the default `.dlog/dlog.db`.
+    #[arg(long = "db", env = "DLOG_DB")]
+    pub db: Option<String>,
 }
 
 /// Arguments for `dlog bind` (design §8.2, §8.3).
