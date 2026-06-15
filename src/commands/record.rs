@@ -22,15 +22,30 @@ struct RecordResult {
 }
 
 pub fn run(args: RecordArgs) -> Result<(), AppError> {
+    // Rationale: "-" reads from stdin so agents can pipe long prose unquoted.
+    let rationale = resolve_rationale(&args.rationale)?;
+
+    let mut anchors: Vec<Anchor> = args.files.iter().map(|s| parse_anchor(s)).collect();
+    // --changed: infer file-level anchors from the working tree, so a decision
+    // about the current changes needn't list each file (lower friction, §7.3).
+    // Union with explicit --file, de-duplicated by path.
+    if args.changed {
+        let have: std::collections::HashSet<String> =
+            anchors.iter().map(|a| a.file.clone()).collect();
+        for file in git_changed_files() {
+            if !have.contains(&file) {
+                anchors.push(parse_anchor(&file));
+            }
+        }
+    }
     // An anchor is part of the minimal required surface (§7.3).
-    if args.files.is_empty() {
+    if anchors.is_empty() {
         return Err(AppError::new(
             "missing_anchor",
-            "record requires at least one --file anchor (design §7.3)",
+            "record requires an anchor: pass --file or --changed (design §7.3)",
         ));
     }
 
-    let mut anchors: Vec<Anchor> = args.files.iter().map(|s| parse_anchor(s)).collect();
     // The base commit the agent is looking at while recording (§10.2). Distinct
     // from the binding stamped at seal, which may be a later commit. Best-effort.
     let recorded_at_sha = current_git_sha();
@@ -53,7 +68,7 @@ pub fn run(args: RecordArgs) -> Result<(), AppError> {
             session_id: args.agent_session,
         },
         conversation_id: args.conversation_id,
-        rationale: args.rationale,
+        rationale,
         rejected,
         caused_by: args.caused_by,
         supersedes: args.supersedes,
@@ -81,6 +96,64 @@ pub fn run(args: RecordArgs) -> Result<(), AppError> {
         declared_invariants,
     });
     Ok(())
+}
+
+/// Resolve the rationale: the sentinel `-` reads it from stdin (so agents can
+/// pipe long prose without shell quoting); anything else is used verbatim. A
+/// blank rationale is rejected — a rationale is required (§7.3).
+fn resolve_rationale(arg: &str) -> Result<String, AppError> {
+    let text = if arg == "-" {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf)?;
+        buf.trim_end().to_string()
+    } else {
+        arg.to_string()
+    };
+    if text.trim().is_empty() {
+        return Err(AppError::new(
+            "empty_rationale",
+            "rationale must not be empty",
+        ));
+    }
+    Ok(text)
+}
+
+/// Files changed in the working tree — staged, unstaged, and untracked — via
+/// `git status --porcelain`. Best-effort: empty outside a git repo or on error.
+fn git_changed_files() -> Vec<String> {
+    let Ok(output) = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    parse_porcelain(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Parse `git status --porcelain` into changed paths. Drops the 2-char status +
+/// space prefix, resolves renames (`R  old -> new` → `new`), and unquotes paths.
+fn parse_porcelain(text: &str) -> Vec<String> {
+    let mut files = Vec::new();
+    for line in text.lines() {
+        if line.len() < 4 {
+            continue;
+        }
+        let rest = &line[3..];
+        let path = rest
+            .rsplit(" -> ")
+            .next()
+            .unwrap_or(rest)
+            .trim()
+            .trim_matches('"');
+        if !path.is_empty() {
+            files.push(path.to_string());
+        }
+    }
+    files
 }
 
 /// Fill an anchor's `symbol_path` / `node_kind` / `structural_hash` from the
@@ -182,6 +255,16 @@ mod tests {
         assert_eq!(r.reason, "");
     }
 
+    #[test]
+    fn parse_porcelain_extracts_changed_paths() {
+        let text = " M src/a.rs\n?? src/new.rs\nA  src/added.rs\nR  src/old.rs -> src/renamed.rs\n";
+        assert_eq!(
+            parse_porcelain(text),
+            vec!["src/a.rs", "src/new.rs", "src/added.rs", "src/renamed.rs"],
+        );
+        assert!(parse_porcelain("").is_empty());
+    }
+
     fn temp_db() -> PathBuf {
         std::env::temp_dir().join(format!("dlog-record-{}.db", ulid::Ulid::new()))
     }
@@ -190,6 +273,7 @@ mod tests {
         RecordArgs {
             rationale: "switch to exponential backoff for retries".into(),
             files: vec!["src/auth.rs:10-45".into()],
+            changed: false,
             agent_role: "implementer".into(),
             agent_model: "claude-test".into(),
             agent_session: None,

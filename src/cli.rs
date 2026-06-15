@@ -76,13 +76,18 @@ impl Command {
 /// (§10.5).
 #[derive(Debug, Args)]
 pub struct RecordArgs {
-    /// Why this decision was made (required).
+    /// Why this decision was made (required). Use `-` to read it from stdin.
     #[arg(long)]
     pub rationale: String,
 
-    /// Anchor: FILE, FILE:LINE, or FILE:START-END. Repeatable; at least one.
+    /// Anchor: FILE, FILE:LINE, or FILE:START-END. Repeatable.
     #[arg(long = "file", value_name = "FILE[:LINES]")]
     pub files: Vec<String>,
+
+    /// Also anchor to the files changed in the working tree (`git status`), so a
+    /// decision about the current changes needn't list each `--file`.
+    #[arg(long = "changed")]
+    pub changed: bool,
 
     /// Agent role, e.g. implementer or reviewer.
     #[arg(long = "agent-role", env = "DLOG_AGENT_ROLE")]
