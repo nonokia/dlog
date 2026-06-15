@@ -53,6 +53,19 @@ Anchor with `FILE`, `FILE:LINE`, or `FILE:START-END`. For Rust files the
 enclosing definition (symbol + structural hash) is captured automatically so the
 decision survives refactors; other files anchor at file level.
 
+Lower-friction shortcuts:
+
+- `--changed` anchors to every file changed in the working tree (`git status`),
+  so a decision about the current change needn't list each file:
+  ```bash
+  dlog record --changed --rationale "extract the retry policy into its own type"
+  ```
+- `--rationale -` reads the rationale from stdin — handy for long or multi-line
+  prose without shell quoting:
+  ```bash
+  printf '%s' "$LONG_RATIONALE" | dlog record --rationale - --changed
+  ```
+
 Optional, when useful:
 
 - `--rejected "approach :: why it was dropped"` (repeatable) — record what you
@@ -133,11 +146,32 @@ dlog show 01J...            # one or more ids
 dlog search --text "backoff"          # full-text over rationale/rejected
 dlog invariants                       # live declared constraints
 dlog invariants --scope src/net       # constraints in effect under a path
+dlog context src/net/                 # decision summary for a path
+dlog trace <id>                       # walk the caused_by chain (causes/effects)
 ```
 
 Superseded decisions are hidden by default; add `--include-superseded` to
 `why`/`search` for history. Staging is included by default and flagged
 `"staged": true`.
+
+## Harness integration (optional)
+
+dlog doesn't force you to record — it lowers the cost and the harness can nudge.
+Two complementary aids:
+
+- **Auto-seal commits** so you never lose a binding: either commit via
+  `dlog commit -- -m "..."`, or install the repo hook once with
+  `dlog hooks install` and then plain `git commit`s auto-seal staging.
+- **A task-end reminder.** If your harness supports stop/end hooks (e.g. Claude
+  Code's `Stop` hook), have it nudge when staging is non-empty — so on-the-ground
+  decisions get sealed before the session ends:
+
+  ```sh
+  # fires when the agent stops; reminds if anything is still unsealed
+  if [ "$(dlog status | grep -o '"staging_count":[0-9]*' | cut -d: -f2)" != "0" ]; then
+    echo "dlog: unsealed decisions in staging — run 'dlog bind --none' (or commit) before ending."
+  fi
+  ```
 
 ## Rules of thumb
 
