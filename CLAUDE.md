@@ -4,20 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-**v0.1 PoC is implemented**, and much of v0.2 (`dlog commit` / post-commit hook, `context` /
-`trace`, TypeScript anchoring, record ergonomics). The CLI works end-to-end — `record` + `why`
-plus the full staging/seal/binding flow, AST-node anchoring with query-time resolution, and the
-rest of the query surface (`show` / `status` / `search` / `invariants` / `context` / `trace`).
-`agent-first-vcs-design.md` (written in Japanese) remains the **source of truth** for design
-decisions; do not re-litigate the settled choices listed in its section 11.
+**v0.1 and v0.2 are implemented.** The CLI works end-to-end: the decision log
+(`record`), the full query surface (`why` / `show` / `status` / `search` /
+`invariants` / `context` / `trace`), staging/seal/binding (`bind`) with git
+automation (`commit` wrapper + `hooks` post-commit auto-seal), AST-node anchoring
+with query-time resolution for **Rust and TypeScript**, and context-budgeted
+output. `agent-first-vcs-design.md` (written in Japanese) remains the **source of
+truth** for design decisions; do not re-litigate the settled choices listed in
+its section 11.
 
 **Workflow:** OpenSpec is adopted from the `context-compression` change onward (design §12) —
 change proposals live in `openspec/changes/<name>/` (`proposal.md` / `design.md` / `tasks.md`),
-config in `openspec/config.yaml`. Earlier v0.1/v0.2 work was tracked as GitHub issues + per-issue
-PRs and is not retro-specced.
-
-Still out of scope (planned for later): the `dlog commit` wrapper, post-commit auto-binding,
-`dlog context` / `dlog trace`, context compression, and tree-sitter grammars other than Rust.
+completed ones are moved to `openspec/changes/archive/`, config in `openspec/config.yaml`. Earlier
+v0.1/v0.2 work was tracked as GitHub issues + per-issue PRs and is not retro-specced.
 
 ## What dlog is
 
@@ -31,11 +30,11 @@ It is intended to be consumed almost entirely by agents (via a CLI, JSON in/out)
 through agents rather than through a human-facing UI. There is deliberately no checkout / merge /
 branch surface.
 
-## Planned tech stack (decided, not yet built)
+## Tech stack
 
 - **Language: Rust** — chosen for tree-sitter affinity and the CLI + SQLite + tree-sitter ecosystem.
 - **CLI: clap** (with `env` feature), **serialization: serde**, **SQLite: rusqlite** (`bundled`),
-  **ids: ulid**, **AST: tree-sitter + tree-sitter-rust**.
+  **ids: ulid**, **AST: tree-sitter** (+ `tree-sitter-rust`, `tree-sitter-typescript`).
 - **No daemon**: each CLI invocation hits SQLite directly; concurrent writes are arbitrated by
   SQLite locking. No CRDT, no distributed sync.
 - **tree-sitter** is used directly (not difftastic) for AST node anchoring.
@@ -47,20 +46,22 @@ with `RUSTFLAGS="-D warnings"`, so keep clippy clean.
 > **Dependency note:** `rusqlite` is pinned to **0.37** on purpose — 0.40 pulls `libsqlite3-sys`
 > 0.38, whose build script uses the still-unstable `cfg_select!` macro and fails on stable rustc.
 
-## Code layout (v0.1)
+## Code layout
 
 - `src/main.rs` — thin entry point; maps `lib::run()` to a process exit code.
 - `src/lib.rs` — clap dispatch table; routes each subcommand to its handler.
 - `src/cli.rs` — clap argument structs (one per command).
-- `src/commands/` — one module per command (`record`, `bind`, `why`, `show`, `status`, `search`,
-  `invariants`), plus `compact` (shared two-stage result rows) and `mod` (shared `AppError`,
-  `open_store`, `parse_line_spec`). A command handler maps args → store/anchor calls → `emit` JSON.
+- `src/commands/` — one module per command (`record`, `bind`, `commit`, `hooks`, `why`, `show`,
+  `status`, `search`, `invariants`, `context`, `trace`), plus `compact` (shared compact result
+  rows + context budget) and `mod` (shared `AppError`, `open_store`, `current_git_sha`,
+  `parse_line_spec`). A command handler maps args → store/anchor calls → `emit` JSON.
 - `src/store.rs` + `src/schema.sql` — the SQLite layer (idempotent migrations). **Staging vs. main
   log is one `decision` table with a `staged` flag, not two physical tables**; sealing flips the
   flag and stamps the binding, and BEFORE UPDATE/DELETE triggers make sealed rows append-only.
 - `src/model.rs` — domain types (Decision/Anchor/Binding/Agent/...).
 - `src/anchor.rs` — **the only language-dependent code**: tree-sitter extraction of `symbol_path`
-  and `structural_hash` at record time (Rust). Everything else degrades to file-level (§10.5).
+  and `structural_hash` at record time. A `LangSupport` table holds the per-language knowledge
+  (Rust, TypeScript/TSX); unsupported files degrade to file-level (§10.5).
 - `src/resolve.rs` — query-time 2-axis resolution producing the `resolution` confidence.
 - `src/output.rs` — the JSON envelope / error / exit-code contract shared by all commands.
 - `templates/AGENTS.md` — instruction template shipped for agents that *use* dlog (distinct from
@@ -119,8 +120,8 @@ blocked.
   binding, and `show`/`trace`/`invariants`/`search`/`status`. File-level anchors are also
   language-independent (path only — non-code files like YAML/Markdown can carry decisions too).
 - **Language-dependent (anchor resolution only):** extracting `symbol_path` and `structural_hash`
-  via tree-sitter. Unsupported languages naturally degrade to `file_fallback`. **Rust is the first
-  language with node anchoring** (dogfooding: dlog is built in Rust).
+  via tree-sitter. Unsupported languages naturally degrade to `file_fallback`. **Rust and
+  TypeScript/TSX have node anchoring** (Rust first, for dogfooding); more grammars are cheap to add.
 
 ## Query API principles (§9)
 - **Two-stage retrieval:** queries default to a compact form (id + rationale summary + binding +
@@ -134,15 +135,18 @@ blocked.
   decision is the most valuable), flagged with `staged: true`. The main-log/staging UNION is hidden
   from the agent as a single list.
 
-Planned command surface: `dlog record`, `dlog why <file:line|symbol>`, `dlog show <id>`,
+- **Context budget (§2.1, #33):** list queries (`why` / `context` / `search`) bound their payload
+  to an agent context window via `--budget` (chars; default on), emitting newest-first with adaptive
+  summary widths and reporting `elided` (live results left out) alongside `truncated`.
+
+Command surface: `dlog record`, `dlog why <file:line|symbol>`, `dlog show <id>`,
 `dlog context <path>`, `dlog trace <id>`, `dlog invariants`, `dlog search --text`, `dlog status`,
-`dlog bind <sha>`. Full-text search uses SQLite FTS5.
+`dlog bind <sha>`, `dlog commit`, `dlog hooks <install|uninstall>`. Full-text search uses SQLite FTS5.
 
-## v0.1 PoC scope (delivered)
+## Scope status
 
-`dlog record` + `dlog why` work, on top of the staging/main-log/binding schema and manual
-`dlog bind <sha>`. Also delivered: the rest of the query surface (`show` / `status` / `search` /
-`invariants`), AST-node anchoring with query-time resolution (Rust only), and the agent instruction
-template (`templates/AGENTS.md`). Out of scope (later): context compression, the `dlog commit`
-wrapper, post-commit auto-binding, `dlog context` / `dlog trace`, and any tree-sitter grammar other
-than Rust.
+**Delivered (v0.1 + v0.2):** the full command surface above; staging/main-log/binding with git
+automation (`commit` wrapper + post-commit `hooks` auto-seal); AST-node anchoring with query-time
+resolution for Rust and TypeScript/TSX; context-budgeted output; and the agent instruction template
+(`templates/AGENTS.md`). Possible later work (not yet scoped): more tree-sitter grammars, richer
+`trace`/`context` rollups, and task-lifecycle commands.

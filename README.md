@@ -10,10 +10,10 @@ It is built to be consumed almost entirely by agents: a small CLI with JSON
 in/out, no daemon, backed by a single SQLite store next to your repo. See
 [`agent-first-vcs-design.md`](agent-first-vcs-design.md) for the full design.
 
-> **Status: v0.1 (PoC).** The decision log, staging/seal + git binding, AST-node
-> anchoring with query-time resolution (Rust), and the query surface are
-> working. Out of scope for v0.1: the `dlog commit` wrapper, post-commit
-> auto-binding, context compression, and tree-sitter grammars other than Rust.
+> **Status: v0.2.** Working: the decision log, the full query surface, staging /
+> seal + git binding with a `dlog commit` wrapper and a post-commit `hooks`
+> auto-seal, AST-node anchoring with query-time resolution for **Rust and
+> TypeScript**, and context-budgeted output. See the design doc for what's next.
 
 ## Build
 
@@ -32,14 +32,20 @@ cargo test
 - **AST-node anchors** — decisions anchor to named definitions (not line
   numbers), so they survive refactors. Identity is judged **at query time** and
   surfaced as a `resolution` (`exact` / `drifted` / `relocated` / `file_fallback`).
+  Rust and TypeScript get node anchoring (tree-sitter); other files anchor at the
+  file level.
 - **Invariants** — declared constraints, queried independently of the log.
 
 ## Commands
 
 ```text
-dlog record   --rationale <why> --file <FILE[:LINES]> [...]   # log a decision (to staging)
+dlog record   --rationale <why> (--file <FILE[:LINES]> | --changed) [...]  # log a decision (to staging)
 dlog bind     <SHA> | --none [--decision <id>...]             # seal staged decisions
-dlog why      <FILE:LINE | SYMBOL> [--include-superseded]     # decisions behind a location
+dlog commit   [-- <git commit args>]                          # git commit, then auto-seal staging
+dlog hooks    <install | uninstall>                           # repo post-commit auto-seal hook
+dlog why      <FILE:LINE | SYMBOL> [--budget <chars>]         # decisions behind a location
+dlog context  <PATH>                                          # decision summary for a file/dir
+dlog trace    <id> [--depth <n>]                              # walk the caused_by DAG (causes/effects)
 dlog show     <id>...                                         # full record(s)
 dlog search   --text <query>                                  # full-text search (FTS5)
 dlog invariants [--scope <path>]                              # live declared constraints
@@ -49,7 +55,9 @@ dlog status                                                   # store state (sta
 Every command prints one JSON document; failures are `{"error":{...}}` (exit 1),
 usage errors exit 2. Agent identity comes from `--agent-role`/`--agent-model`
 (or `DLOG_AGENT_ROLE`/`DLOG_AGENT_MODEL`); the store path from `--db` or
-`DLOG_DB` (default `.dlog/dlog.db`).
+`DLOG_DB` (default `.dlog/dlog.db`). The list queries (`why`/`context`/`search`)
+bound their output to a `--budget` of characters and report `elided` when results
+are left out.
 
 ### Example
 
@@ -59,9 +67,10 @@ export DLOG_AGENT_ROLE=implementer DLOG_AGENT_MODEL=<model-id>
 dlog record --rationale "retry with backoff; upstream API is flaky" \
             --file src/net/client.rs:42 \
             --rejected "fixed sleep :: too slow under load"
-git commit -m "add retry" && dlog bind "$(git rev-parse HEAD)"
+dlog commit -- -m "add retry"      # git commit + auto-seal staging to it
 
 dlog why src/net/client.rs:42      # -> resolution + compact results
+dlog context src/net/              # -> decisions across the directory
 dlog show <id>                     # -> full decision
 ```
 
