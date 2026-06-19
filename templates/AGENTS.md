@@ -10,6 +10,16 @@ across sessions and hand-offs. It is consumed via a CLI with JSON in/out; every
 command prints one JSON document. A failure is `{"error":{"code","message"}}`
 with exit code 1; a usage error exits 2.
 
+## Install (if `dlog` isn't on PATH)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nonokia/dlog/main/install.sh | sh
+# or from source: cargo install --git https://github.com/nonokia/dlog dlog
+```
+
+The installer fetches a prebuilt binary into `$HOME/.local/bin` (override with
+`DLOG_BIN_DIR`); pin a release with `DLOG_VERSION`. Verify with `dlog status`.
+
 ## Setup (once per session)
 
 Set your identity via environment variables so you don't repeat it on every call:

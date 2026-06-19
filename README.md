@@ -15,9 +15,39 @@ in/out, no daemon, backed by a single SQLite store next to your repo. See
 > auto-seal, AST-node anchoring with query-time resolution for **Rust and
 > TypeScript**, and context-budgeted output. See the design doc for what's next.
 
-## Build
+## Install
+
+**Prebuilt binary (no toolchain needed).** Downloads the right binary for your
+platform from the [GitHub Releases](https://github.com/nonokia/dlog/releases)
+and drops it on your PATH (`$HOME/.local/bin` by default):
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/nonokia/dlog/main/install.sh | sh
+```
+
+Override the target dir with `DLOG_BIN_DIR`, or pin a tag with `DLOG_VERSION`:
+
+```bash
+DLOG_BIN_DIR=/usr/local/bin DLOG_VERSION=v0.2.0 \
+  sh -c "$(curl -fsSL https://raw.githubusercontent.com/nonokia/dlog/main/install.sh)"
+```
+
+Prebuilt targets: Linux and macOS, x86_64 and aarch64. Each release also ships
+`*.tar.gz.sha256` checksums (the installer verifies them automatically).
+
+**With Cargo** (builds from source — needs a Rust + C toolchain, bundles SQLite
+and tree-sitter):
+
+```bash
+cargo install --git https://github.com/nonokia/dlog dlog
+```
+
+> A Homebrew tap is planned as a follow-up once the first release is published.
+
+### Build from source
+
+```bash
+git clone https://github.com/nonokia/dlog && cd dlog
 cargo build            # or: cargo install --path .
 cargo test
 ```

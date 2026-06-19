@@ -1,0 +1,85 @@
+name: Release
+
+# On a version tag, build prebuilt binaries for the common targets and attach
+# them (with checksums) to a GitHub Release, so `dlog` is installable without
+# cloning + a C toolchain (it bundles SQLite + tree-sitter). See #47.
+#
+# Each target builds on its native runner so the bundled C compiles per platform
+# — no cross-compilation. Asset layout matches install.sh: a `dlog-<target>.tar.gz`
+# containing a `dlog-<target>/` dir with the `dlog` binary.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
+          - { target: x86_64-apple-darwin, os: macos-13 }
+          - { target: aarch64-apple-darwin, os: macos-14 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="dlog-${{ matrix.target }}"
+          mkdir "$dir"
+          cp "target/${{ matrix.target }}/release/dlog" "$dir/"
+          cp README.md LICENSE "$dir/"
+          tar -czf "$dir.tar.gz" "$dir"
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$dir.tar.gz" > "$dir.tar.gz.sha256"
+          else
+            shasum -a 256 "$dir.tar.gz" > "$dir.tar.gz.sha256"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dlog-${{ matrix.target }}
+          path: |
+            dlog-${{ matrix.target }}.tar.gz
+            dlog-${{ matrix.target }}.tar.gz.sha256
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
