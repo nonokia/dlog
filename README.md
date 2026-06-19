@@ -112,3 +112,15 @@ repo's `AGENTS.md` / `CLAUDE.md`. It covers: setting identity, checking
 `dlog status` at task start, recording decisions as you make them, sealing after
 commits (and subagents sealing at task end), and reading `resolution` before
 trusting a decision.
+
+### Agent discovery (ARD)
+
+dlog advertises itself for
+[Agentic Resource Discovery](https://github.com/ards-project/ard-spec) so agents
+can find it by searching rather than being told. The catalog is served at
+`/.well-known/ai-catalog.json` (via GitHub Pages from [`docs/`](docs/)) and
+lists dlog as an `application/ai-skill` whose `url` points at the skill doc
+above (install + usage). The catalog is schema-validated in CI — see
+[`scripts/ard/`](scripts/ard/). Strict ARD discovery expects the catalog at a
+domain root; the project-Pages subpath is a v1 step, with domain-anchored
+hosting as a follow-up.

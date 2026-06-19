@@ -1,0 +1,34 @@
+name: ARD catalog
+
+# Keep the ARD discovery catalog valid against the (pinned, vendored) schema.
+# ARD is new and fluid, so we validate against scripts/ard/ai-catalog.schema.json
+# rather than fetching upstream at CI time. See scripts/ard/README.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/.well-known/ai-catalog.json"
+      - "scripts/ard/**"
+      - ".github/workflows/ard-validate.yml"
+  pull_request:
+    paths:
+      - "docs/.well-known/ai-catalog.json"
+      - "scripts/ard/**"
+      - ".github/workflows/ard-validate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: pip install jsonschema
+      - run: python3 scripts/ard/validate_catalog.py
