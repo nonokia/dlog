@@ -1,0 +1,37 @@
+{
+  "specVersion": "1.0",
+  "host": {
+    "displayName": "dlog",
+    "documentationUrl": "https://github.com/nonokia/dlog"
+  },
+  "entries": [
+    {
+      "identifier": "urn:ai:github.com:nonokia:dlog",
+      "displayName": "dlog — agent-first decision log",
+      "type": "application/ai-skill",
+      "url": "https://raw.githubusercontent.com/nonokia/dlog/main/templates/AGENTS.md",
+      "description": "A CLI that records the decisions behind code (rationale, rejected alternatives, assumptions/invariants, the original instruction) alongside Git, so AI agents can reconstruct context across sessions and multi-agent hand-offs. JSON in/out, no daemon, SQLite-backed. The url points to the agent skill doc covering install and usage.",
+      "tags": ["decision-log", "git", "cli", "agent", "tree-sitter", "rust"],
+      "capabilities": [
+        "record",
+        "why",
+        "show",
+        "context",
+        "trace",
+        "search",
+        "invariants",
+        "bind",
+        "commit",
+        "hooks"
+      ],
+      "representativeQueries": [
+        "record the rationale and rejected alternatives behind a code change",
+        "find out why a function was written the way it is across past sessions",
+        "reconstruct decision context after a multi-agent hand-off",
+        "log invariants and assumptions alongside git commits"
+      ],
+      "version": "0.2.0",
+      "updatedAt": "2026-06-19T00:00:00Z"
+    }
+  ]
+}

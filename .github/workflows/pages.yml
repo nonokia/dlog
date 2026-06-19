@@ -1,0 +1,41 @@
+name: Deploy Pages
+
+# Publish docs/ (which holds .well-known/ai-catalog.json for ARD discovery) to
+# GitHub Pages. Requires Pages to be enabled once in the repo settings with
+# "Source: GitHub Actions" (Settings → Pages). The Actions deployment serves the
+# .well-known dot-dir without Jekyll; .nojekyll is kept for the branch-deploy
+# fallback.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment, don't cancel in-progress ones.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+      - id: deployment
+        uses: actions/deploy-pages@v4
