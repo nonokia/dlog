@@ -4,9 +4,12 @@ name: Release
 # them (with checksums) to a GitHub Release, so `dlog` is installable without
 # cloning + a C toolchain (it bundles SQLite + tree-sitter). See #47.
 #
-# Each target builds on its native runner so the bundled C compiles per platform
-# — no cross-compilation. Asset layout matches install.sh: a `dlog-<target>.tar.gz`
-# containing a `dlog-<target>/` dir with the `dlog` binary.
+# Linux targets build on native runners; both macOS targets build on macos-14
+# (Apple Silicon), cross-compiling x86_64 there — the scarce macos-13 Intel
+# runners can queue indefinitely, and Apple's clang cross-compiles to x86_64 out
+# of the box (so the bundled SQLite + tree-sitter C still build). Asset layout
+# matches install.sh: a `dlog-<target>.tar.gz` with a `dlog-<target>/` dir
+# holding the `dlog` binary.
 
 on:
   push:
@@ -29,7 +32,7 @@ jobs:
         include:
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
           - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
-          - { target: x86_64-apple-darwin, os: macos-13 }
+          - { target: x86_64-apple-darwin, os: macos-14 }
           - { target: aarch64-apple-darwin, os: macos-14 }
     steps:
       - uses: actions/checkout@v4
