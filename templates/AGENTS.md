@@ -59,9 +59,10 @@ dlog record \
 # {"id":"01J...","staged":true}
 ```
 
-Anchor with `FILE`, `FILE:LINE`, or `FILE:START-END`. For Rust files the
-enclosing definition (symbol + structural hash) is captured automatically so the
-decision survives refactors; other files anchor at file level.
+Anchor with `FILE`, `FILE:LINE`, or `FILE:START-END`. For Rust and
+TypeScript/TSX files the enclosing definition (symbol + structural hash) is
+captured automatically so the decision survives refactors; other files anchor at
+file level.
 
 Lower-friction shortcuts:
 
