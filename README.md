@@ -92,11 +92,10 @@ are left out.
 ### Example
 
 ```bash
-export DLOG_AGENT_ROLE=implementer DLOG_AGENT_MODEL=<model-id>
-
 dlog record --rationale "retry with backoff; upstream API is flaky" \
             --file src/net/client.rs:42 \
-            --rejected "fixed sleep :: too slow under load"
+            --rejected "fixed sleep :: too slow under load" \
+            --agent-role implementer --agent-model <model-id>
 dlog commit -- -m "add retry"      # git commit + auto-seal staging to it
 
 dlog why src/net/client.rs:42      # -> resolution + compact results

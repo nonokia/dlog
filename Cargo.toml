@@ -1,6 +1,6 @@
 [package]
 name = "dlog"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Agent-first decision log that sits alongside Git"
 license = "MIT"

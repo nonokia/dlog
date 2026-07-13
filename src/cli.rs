@@ -66,9 +66,9 @@ impl Command {
 /// Arguments for `dlog record` (design §7.3, §7.4).
 ///
 /// Only `--rationale`, at least one `--file` anchor, and the agent identity are
-/// required (kept minimal to avoid recording friction, §7.3). Agent identity
-/// falls back to environment variables so an agent sets it once per session
-/// rather than on every call.
+/// required (kept minimal to avoid recording friction, §7.3). Agent identity is
+/// passed as flags; the `DLOG_AGENT_*` environment variables remain as
+/// fallbacks for shells where exports persist (flags win).
 ///
 /// Anchors here record only `file` and an optional line span; `symbol_path` /
 /// `structural_hash` extraction is language-dependent and lands with the Rust
