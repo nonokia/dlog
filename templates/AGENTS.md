@@ -20,18 +20,25 @@ curl -fsSL https://raw.githubusercontent.com/nonokia/dlog/main/install.sh | sh
 The installer fetches a prebuilt binary into `$HOME/.local/bin` (override with
 `DLOG_BIN_DIR`); pin a release with `DLOG_VERSION`. Verify with `dlog status`.
 
-## Setup (once per session)
+## Identity
 
-Set your identity via environment variables so you don't repeat it on every call:
+Every `record` carries your identity. Pass it as flags on each call:
 
 ```bash
-export DLOG_AGENT_ROLE=implementer   # or reviewer, investigator, ...
-export DLOG_AGENT_MODEL=<your-model-id>
-export DLOG_AGENT_SESSION=<session-id>   # optional
+--agent-role implementer         # or reviewer, investigator, ...
+--agent-model <your-model-id>
+--agent-session <session-id>     # optional
 ```
 
-The store lives at `.dlog/dlog.db` in the repo (override with `DLOG_DB`). It is
-created on first use.
+Prefer the flags. Sandboxed harnesses (e.g. Claude Code) run each command in a
+fresh shell, so `export` doesn't persist — and prefixing every call with
+`DLOG_AGENT_MODEL=... dlog ...` doesn't match command allowlists, triggering a
+permission prompt each time. If your shell *does* persist, the same values are
+read from `DLOG_AGENT_ROLE` / `DLOG_AGENT_MODEL` / `DLOG_AGENT_SESSION` as
+fallbacks (flags win).
+
+The store lives at `.dlog/dlog.db` in the repo (override with `--db` or
+`DLOG_DB`). It is created on first use.
 
 ## At the start of a task
 
@@ -55,7 +62,8 @@ commit, so commit-time-only recording loses them. Keep it low-friction: only
 ```bash
 dlog record \
   --rationale "retry with exponential backoff; the upstream API is flaky" \
-  --file src/net/client.rs:42
+  --file src/net/client.rs:42 \
+  --agent-role implementer --agent-model <your-model-id>
 # {"id":"01J...","staged":true}
 ```
 
@@ -64,7 +72,7 @@ TypeScript/TSX files the enclosing definition (symbol + structural hash) is
 captured automatically so the decision survives refactors; other files anchor at
 file level.
 
-Lower-friction shortcuts:
+Lower-friction shortcuts (identity flags elided below — they're still required):
 
 - `--changed` anchors to every file changed in the working tree (`git status`),
   so a decision about the current change needn't list each file:
