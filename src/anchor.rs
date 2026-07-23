@@ -8,8 +8,9 @@
 //! `line_span`, and a `structural_hash`.
 //!
 //! The per-language knowledge lives in [`LangSupport`]; the walk and hashing are
-//! language-agnostic. Rust and TypeScript/TSX are supported (§10.6); other files
-//! have no [`language_for_path`] and degrade to file-level anchors (§10.5).
+//! language-agnostic. Rust, TypeScript/TSX, Go, and PHP are supported (§10.6);
+//! other files have no [`language_for_path`] and degrade to file-level anchors
+//! (§10.5).
 //!
 //! The `structural_hash` is a stable FNV-1a hash over the node's token stream
 //! with **identifiers, comments, and whitespace normalised away**, seeded with
@@ -37,11 +38,19 @@ pub struct Definition {
 /// tree walk, symbol-path building, hashing) is shared.
 pub struct LangSupport {
     language: fn() -> tree_sitter::Language,
-    /// Map a node kind to the definition label we anchor to, or `None`.
-    classify: fn(&str, bool) -> Option<&'static str>,
+    /// Map a definition node to the label we anchor to, or `None`. Takes the
+    /// whole node (not just its kind) so languages can disambiguate by children
+    /// — e.g. Go's `type_spec` is a `struct` or `interface` depending on the
+    /// `type` child.
+    classify: fn(Node, bool) -> Option<&'static str>,
     /// The path segment a node contributes to enclosed definitions (e.g. a
     /// module/class name, or an `impl` block's type).
     scope_segment: fn(Node, &[u8]) -> Option<String>,
+    /// An extra path segment for the definition node *itself* (not inherited by
+    /// children), used when a definition carries its own owner — e.g. a Go
+    /// method's receiver type yields `Client::Connect`. Most languages return
+    /// `None` and rely on [`LangSupport::scope_segment`] alone.
+    def_prefix: fn(Node, &[u8]) -> Option<String>,
     /// Whether descending into this node makes its functions *methods*.
     opens_method_scope: fn(&str) -> bool,
     /// Whether descending into this node ends method context (e.g. a function).
@@ -59,6 +68,8 @@ pub fn language_for_path(path: &str) -> Option<&'static LangSupport> {
         "rs" => Some(&RUST),
         "ts" | "mts" | "cts" => Some(&TYPESCRIPT),
         "tsx" => Some(&TSX),
+        "go" => Some(&GO),
+        "php" | "phtml" => Some(&PHP),
         _ => None,
     }
 }
@@ -103,10 +114,13 @@ fn walk(
     for child in node.children(&mut cursor) {
         let kind = child.kind();
 
-        if let Some(def_kind) = (lang.classify)(kind, in_method)
+        if let Some(def_kind) = (lang.classify)(child, in_method)
             && let Some(name) = node_name(child, src)
         {
             let mut path = scope.clone();
+            if let Some(prefix) = (lang.def_prefix)(child, src) {
+                path.push(prefix);
+            }
             path.push(name);
             out.push(Definition {
                 symbol_path: path.join("::"),
@@ -147,6 +161,7 @@ pub static RUST: LangSupport = LangSupport {
     language: rust_language,
     classify: rust_classify,
     scope_segment: rust_scope_segment,
+    def_prefix: |_, _| None,
     opens_method_scope: |k| matches!(k, "impl_item" | "trait_item"),
     resets_method_scope: |k| matches!(k, "mod_item" | "function_item"),
     is_identifier: |k| {
@@ -162,8 +177,8 @@ fn rust_language() -> tree_sitter::Language {
     tree_sitter_rust::LANGUAGE.into()
 }
 
-fn rust_classify(kind: &str, in_method: bool) -> Option<&'static str> {
-    match kind {
+fn rust_classify(node: Node, in_method: bool) -> Option<&'static str> {
+    match node.kind() {
         // `function_signature_item` is a body-less method declaration in a trait.
         "function_item" | "function_signature_item" => {
             Some(if in_method { "method" } else { "function" })
@@ -194,6 +209,7 @@ pub static TYPESCRIPT: LangSupport = LangSupport {
     language: ts_language,
     classify: ts_classify,
     scope_segment: ts_scope_segment,
+    def_prefix: |_, _| None,
     opens_method_scope: ts_opens_method_scope,
     resets_method_scope: ts_resets_method_scope,
     is_identifier: ts_is_identifier,
@@ -204,6 +220,7 @@ pub static TSX: LangSupport = LangSupport {
     language: tsx_language,
     classify: ts_classify,
     scope_segment: ts_scope_segment,
+    def_prefix: |_, _| None,
     opens_method_scope: ts_opens_method_scope,
     resets_method_scope: ts_resets_method_scope,
     is_identifier: ts_is_identifier,
@@ -218,8 +235,8 @@ fn tsx_language() -> tree_sitter::Language {
     tree_sitter_typescript::LANGUAGE_TSX.into()
 }
 
-fn ts_classify(kind: &str, in_method: bool) -> Option<&'static str> {
-    match kind {
+fn ts_classify(node: Node, in_method: bool) -> Option<&'static str> {
+    match node.kind() {
         "function_declaration" | "generator_function_declaration" => {
             Some(if in_method { "method" } else { "function" })
         }
@@ -272,6 +289,132 @@ fn ts_is_identifier(kind: &str) -> bool {
     )
 }
 
+// ---- Go --------------------------------------------------------------------
+
+pub static GO: LangSupport = LangSupport {
+    language: go_language,
+    classify: go_classify,
+    scope_segment: go_scope_segment,
+    def_prefix: go_def_prefix,
+    // Go methods are top-level `method_declaration`s carrying a receiver, not
+    // nested in the type, so method context is decided per-node in `go_classify`
+    // rather than by descending into a scope.
+    opens_method_scope: |_| false,
+    resets_method_scope: |_| false,
+    is_identifier: |k| {
+        matches!(
+            k,
+            "identifier" | "type_identifier" | "field_identifier" | "package_identifier"
+        )
+    },
+    is_comment: |k| k == "comment",
+};
+
+fn go_language() -> tree_sitter::Language {
+    tree_sitter_go::LANGUAGE.into()
+}
+
+fn go_classify(node: Node, _in_method: bool) -> Option<&'static str> {
+    match node.kind() {
+        "function_declaration" => Some("function"),
+        // A free `method_declaration` (receiver-based) or an `interface`'s
+        // `method_elem` signature both anchor as methods.
+        "method_declaration" | "method_elem" => Some("method"),
+        // `type Foo struct/interface {…}`: the shape lives in the `type` child.
+        "type_spec" => match node.child_by_field_name("type").map(|t| t.kind()) {
+            Some("struct_type") => Some("struct"),
+            Some("interface_type") => Some("interface"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn go_scope_segment(node: Node, src: &[u8]) -> Option<String> {
+    // An interface's method signatures nest under the type name (`Transport::Send`).
+    // Struct methods don't nest here — they're top-level and use `go_def_prefix`.
+    match node.kind() {
+        "type_spec" => node_name(node, src),
+        _ => None,
+    }
+}
+
+/// A Go method's receiver type, e.g. `Connect` on `func (c *Client) Connect()`
+/// becomes `Client::Connect`. Strips a leading `*` on pointer receivers.
+fn go_def_prefix(node: Node, src: &[u8]) -> Option<String> {
+    if node.kind() != "method_declaration" {
+        return None;
+    }
+    let receiver = node.child_by_field_name("receiver")?;
+    let mut cursor = receiver.walk();
+    let param = receiver
+        .children(&mut cursor)
+        .find(|c| c.kind() == "parameter_declaration")?;
+    let ty = param.child_by_field_name("type")?;
+    // Unwrap `*T` to `T`.
+    let base = if ty.kind() == "pointer_type" {
+        ty.named_child(0).unwrap_or(ty)
+    } else {
+        ty
+    };
+    base.utf8_text(src).ok().map(str::to_string)
+}
+
+// ---- PHP -------------------------------------------------------------------
+
+pub static PHP: LangSupport = LangSupport {
+    language: php_language,
+    classify: php_classify,
+    scope_segment: php_scope_segment,
+    def_prefix: |_, _| None,
+    opens_method_scope: |k| {
+        matches!(
+            k,
+            "class_declaration"
+                | "interface_declaration"
+                | "trait_declaration"
+                | "enum_declaration"
+        )
+    },
+    resets_method_scope: |k| matches!(k, "function_definition" | "method_declaration"),
+    // In PHP every identifier — class/function names, type references, the ident
+    // inside a `variable_name` — is a `name` leaf.
+    is_identifier: |k| k == "name",
+    is_comment: |k| k == "comment",
+};
+
+fn php_language() -> tree_sitter::Language {
+    tree_sitter_php::LANGUAGE_PHP.into()
+}
+
+fn php_classify(node: Node, _in_method: bool) -> Option<&'static str> {
+    match node.kind() {
+        // A class body uses `method_declaration`; free functions are
+        // `function_definition`.
+        "function_definition" => Some("function"),
+        "method_declaration" => Some("method"),
+        "class_declaration" => Some("class"),
+        "interface_declaration" => Some("interface"),
+        "trait_declaration" => Some("trait"),
+        "enum_declaration" => Some("enum"),
+        "namespace_definition" => Some("module"),
+        _ => None,
+    }
+}
+
+fn php_scope_segment(node: Node, src: &[u8]) -> Option<String> {
+    match node.kind() {
+        "class_declaration"
+        | "interface_declaration"
+        | "trait_declaration"
+        | "enum_declaration"
+        // Block-form `namespace X { … }` nests its members; the statement form
+        // `namespace X;` puts them as siblings and simply doesn't prefix (§10.5).
+        | "namespace_definition" => node_name(node, src),
+        _ => None,
+    }
+}
+
 // ---- Structural hash (language-agnostic) ----------------------------------
 
 /// Stable FNV-1a hash of a node's normalised token stream, seeded with name-free
@@ -291,13 +434,16 @@ fn structural_hash(node: Node, src: &[u8], lang: &LangSupport) -> String {
 
 /// A name-free shape signature: parameter count and whether a return type is
 /// present, packed into one integer. The parameter list is found by field name
-/// (`parameters`, shared by Rust and TS); its named children are the params.
+/// (`parameters`, shared by Rust, TS, Go, and PHP); its named children are the
+/// params. The return type is `return_type` in every grammar except Go, which
+/// names it `result`.
 fn signature_shape(node: Node) -> u32 {
     let arity = node
         .child_by_field_name("parameters")
         .map(|params| params.named_child_count() as u32)
         .unwrap_or(0);
-    let has_return = node.child_by_field_name("return_type").is_some();
+    let has_return = node.child_by_field_name("return_type").is_some()
+        || node.child_by_field_name("result").is_some();
     (arity << 1) | has_return as u32
 }
 
@@ -347,6 +493,8 @@ mod tests {
         assert!(language_for_path("src/a.rs").is_some());
         assert!(language_for_path("src/a.ts").is_some());
         assert!(language_for_path("src/a.tsx").is_some());
+        assert!(language_for_path("src/a.go").is_some());
+        assert!(language_for_path("src/a.php").is_some());
         assert!(language_for_path("README.md").is_none());
         assert!(language_for_path("Makefile").is_none());
         // A dot in a directory must not be mistaken for an extension.
@@ -431,6 +579,113 @@ function top() {}
         assert_ne!(
             h("function f(a: number) {}"),
             h("function f(a: number, b: number) {}")
+        );
+    }
+
+    #[test]
+    fn extracts_go_definitions() {
+        let source = r#"
+package net
+
+type Client struct { url string }
+
+func (c *Client) Connect(n int) bool { return n > 0 }
+
+func Helper(a int, b int) int { return a + b }
+
+type Transport interface {
+    Send(x string)
+}
+"#;
+        let defs = extract_definitions(source, &GO);
+        let by_path: Vec<(&str, &str)> = defs
+            .iter()
+            .map(|d| (d.symbol_path.as_str(), d.node_kind.as_str()))
+            .collect();
+
+        assert!(by_path.contains(&("Client", "struct")));
+        // Receiver type is prepended even though the method is top-level.
+        assert!(by_path.contains(&("Client::Connect", "method")));
+        assert!(by_path.contains(&("Helper", "function")));
+        assert!(by_path.contains(&("Transport", "interface")));
+        assert!(by_path.contains(&("Transport::Send", "method")));
+    }
+
+    #[test]
+    fn go_definition_at_line_and_hash_invariance() {
+        let source = "package p\nfunc (c *Client) m(a int) int {\n  x := a\n  return x\n}\n";
+        let def = definition_at_line(source, 3, &GO).expect("line 3 inside Client::m");
+        assert_eq!(def.symbol_path, "Client::m");
+        assert_eq!(def.node_kind, "method");
+
+        // Identifier renames don't change the Go hash; an arity change does.
+        let h = |s: &str| {
+            extract_definitions(s, &GO)
+                .into_iter()
+                .next()
+                .unwrap()
+                .structural_hash
+        };
+        assert_eq!(
+            h("package p\nfunc f(a int) int { return a }"),
+            h("package p\nfunc renamed(b int) int { return b }")
+        );
+        assert_ne!(
+            h("package p\nfunc f(a int) {}"),
+            h("package p\nfunc f(a int, b int) {}")
+        );
+    }
+
+    #[test]
+    fn extracts_php_definitions() {
+        let source = r#"<?php
+namespace App {
+    class Client {
+        public function connect(int $n): bool { return $n > 0; }
+    }
+    interface Transport { public function send(string $x): void; }
+    trait Loggable { public function log(): void {} }
+    function helper(int $a, int $b): int { return $a + $b; }
+}
+"#;
+        let defs = extract_definitions(source, &PHP);
+        let by_path: Vec<(&str, &str)> = defs
+            .iter()
+            .map(|d| (d.symbol_path.as_str(), d.node_kind.as_str()))
+            .collect();
+
+        assert!(by_path.contains(&("App", "module")));
+        assert!(by_path.contains(&("App::Client", "class")));
+        assert!(by_path.contains(&("App::Client::connect", "method")));
+        assert!(by_path.contains(&("App::Transport", "interface")));
+        assert!(by_path.contains(&("App::Transport::send", "method")));
+        assert!(by_path.contains(&("App::Loggable", "trait")));
+        assert!(by_path.contains(&("App::Loggable::log", "method")));
+        assert!(by_path.contains(&("App::helper", "function")));
+    }
+
+    #[test]
+    fn php_definition_at_line_and_hash_invariance() {
+        let source = "<?php\nclass C {\n  function m(int $a): void {\n    $x = 1;\n  }\n}\n";
+        let def = definition_at_line(source, 4, &PHP).expect("line 4 inside C::m");
+        assert_eq!(def.symbol_path, "C::m");
+        assert_eq!(def.node_kind, "method");
+
+        // Identifier renames don't change the PHP hash; an arity change does.
+        let h = |s: &str| {
+            extract_definitions(s, &PHP)
+                .into_iter()
+                .next()
+                .unwrap()
+                .structural_hash
+        };
+        assert_eq!(
+            h("<?php function f(int $a) { return $a; }"),
+            h("<?php function renamed(int $b) { return $b; }")
+        );
+        assert_ne!(
+            h("<?php function f(int $a) {}"),
+            h("<?php function f(int $a, int $b) {}")
         );
     }
 
