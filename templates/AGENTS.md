@@ -37,17 +37,36 @@ permission prompt each time. If your shell *does* persist, the same values are
 read from `DLOG_AGENT_ROLE` / `DLOG_AGENT_MODEL` / `DLOG_AGENT_SESSION` as
 fallbacks (flags win).
 
-The store lives at `.dlog/dlog.db` in the repo (override with `--db` or
-`DLOG_DB`). It is created on first use.
+## Workspace
+
+Every command resolves a **workspace root** by walking up from the current
+directory: the nearest ancestor holding a `.dlog/`, else the nearest git
+repository, else the current directory. The store is `<root>/.dlog/dlog.db`
+(override with `--db` or `DLOG_DB`) and is created on first use.
+
+Anchors are stored relative to that root, so you can record and query from any
+subdirectory and get the same answers. In a project with no git repository, run
+`dlog init` once at the top to declare the root:
+
+```bash
+dlog init
+# {"root":"/path/to/project","db":"/path/to/project/.dlog/dlog.db","created":true}
+```
+
+Git is optional — only `dlog commit` and `dlog hooks` require it. Without git,
+record as usual and seal with `dlog bind --none` at the end of the task.
 
 ## At the start of a task
 
-Check the store state. If decisions are stranded in staging (e.g. a plain
-`git commit` was made without sealing), deal with them before starting:
+Check the store state. It also tells you which store you are talking to — if
+`root` isn't the project you expect, you are in the wrong workspace. If decisions
+are stranded in staging (e.g. a plain `git commit` was made without sealing),
+deal with them before starting:
 
 ```bash
 dlog status
-# {"staging_count":N,"oldest_staged_ms":...,"schema_version":1}
+# {"root":"...","db":"...","root_source":"dlog","staging_count":N,
+#  "oldest_staged_ms":...,"schema_version":1}
 ```
 
 If `staging_count > 0` and you know which commit they belong to, seal them with

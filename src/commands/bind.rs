@@ -9,7 +9,7 @@
 use serde::Serialize;
 
 use crate::cli::BindArgs;
-use crate::commands::{AppError, open_store};
+use crate::commands::{AppError, Workspace};
 use crate::model::Binding;
 use crate::output::emit;
 
@@ -35,7 +35,7 @@ pub fn run(args: BindArgs) -> Result<(), AppError> {
         }
     };
 
-    let store = open_store(args.db)?;
+    let store = Workspace::discover(args.db)?.open()?;
     let only = if args.decisions.is_empty() {
         None
     } else {

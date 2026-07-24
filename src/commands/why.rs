@@ -9,12 +9,14 @@
 //! (`--include-superseded` for history), staging is included and flagged
 //! `staged: true`, and the main-log/staging union is presented as one list.
 
+use std::path::Path;
+
 use serde::Serialize;
 
 use crate::anchor;
 use crate::cli::WhyArgs;
 use crate::commands::compact::{self, CompactRow};
-use crate::commands::{AppError, open_store, parse_line_spec};
+use crate::commands::{AppError, Workspace, parse_line_spec};
 use crate::output::{QueryEnvelope, Resolved as ResolvedHead, emit};
 use crate::resolve::{self, QueryNode};
 use crate::store::Store;
@@ -28,15 +30,22 @@ struct QueryDesc {
 }
 
 pub fn run(args: WhyArgs) -> Result<(), AppError> {
-    let store = open_store(args.db.clone())?;
-    let envelope = build(&store, &args)?;
+    let workspace = Workspace::discover(args.db.clone())?;
+    let cwd = std::env::current_dir()?;
+    let store = workspace.open()?;
+    let envelope = build(&store, &workspace, &cwd, &args)?;
     emit(&envelope);
     Ok(())
 }
 
 /// Core of `why`, separated from emission so it can be unit-tested.
-fn build(store: &Store, args: &WhyArgs) -> rusqlite::Result<QueryEnvelope<QueryDesc, CompactRow>> {
-    let query_node = build_query_node(&args.target);
+fn build(
+    store: &Store,
+    workspace: &Workspace,
+    cwd: &Path,
+    args: &WhyArgs,
+) -> rusqlite::Result<QueryEnvelope<QueryDesc, CompactRow>> {
+    let query_node = build_query_node(workspace, cwd, &args.target);
     let resolved = resolve::resolve(store, &query_node)?;
 
     let (results, truncated, elided) = compact::collect(
@@ -69,16 +78,19 @@ fn build(store: &Store, args: &WhyArgs) -> rusqlite::Result<QueryEnvelope<QueryD
 }
 
 /// Interpret a target into a [`QueryNode`]. `file:line` / `file:start-end` read
-/// the file and resolve the enclosing Rust definition (§10.4); a path with no
-/// line is a file-level query; anything else is treated as a symbol path.
-fn build_query_node(target: &str) -> QueryNode {
+/// the file and resolve the enclosing definition (§10.4); a path with no line is
+/// a file-level query; anything else is treated as a symbol path.
+///
+/// File targets are normalized against the workspace root, so a query from a
+/// subdirectory matches anchors recorded from anywhere else in the project.
+fn build_query_node(workspace: &Workspace, cwd: &Path, target: &str) -> QueryNode {
     if let Some((path, lines)) = target.rsplit_once(':')
         && let Some((start, _end)) = parse_line_spec(lines)
     {
-        return node_for_file_line(path, start);
+        return node_for_file_line(workspace, &workspace.relativize(cwd, path), start);
     }
     if target.contains('/') || (target.contains('.') && !target.contains("::")) {
-        return QueryNode::file_level(target);
+        return QueryNode::file_level(workspace.relativize(cwd, target));
     }
     QueryNode {
         file: None,
@@ -87,9 +99,10 @@ fn build_query_node(target: &str) -> QueryNode {
     }
 }
 
-fn node_for_file_line(path: &str, line: u32) -> QueryNode {
+/// `path` is already workspace-relative; the source is read through the root.
+fn node_for_file_line(workspace: &Workspace, path: &str, line: u32) -> QueryNode {
     if let Some(lang) = anchor::language_for_path(path)
-        && let Ok(source) = std::fs::read_to_string(path)
+        && let Ok(source) = std::fs::read_to_string(workspace.resolve_path(path))
         && let Some(def) = anchor::definition_at_line(&source, line, lang)
     {
         return QueryNode::from_definition(path, &def);
@@ -102,11 +115,22 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::commands::RootSource;
     use crate::model::{Agent, Anchor, NewDecision};
     use crate::output::Resolution;
 
     fn temp_db() -> PathBuf {
         std::env::temp_dir().join(format!("dlog-why-{}.db", ulid::Ulid::new()))
+    }
+
+    /// A workspace rooted at `/proj`, so target normalization is exercised
+    /// without depending on the process cwd.
+    fn workspace() -> Workspace {
+        Workspace::rooted(PathBuf::from("/proj"), RootSource::Dlog, None)
+    }
+
+    fn root() -> &'static Path {
+        Path::new("/proj")
     }
 
     fn seed(
@@ -152,15 +176,49 @@ mod tests {
 
     #[test]
     fn build_query_node_classifies_targets() {
+        let (ws, cwd) = (workspace(), root());
         assert_eq!(
-            build_query_node("AuthService::authenticate")
+            build_query_node(&ws, cwd, "AuthService::authenticate")
                 .symbol_path
                 .as_deref(),
             Some("AuthService::authenticate")
         );
-        let file = build_query_node("README.md");
+        let file = build_query_node(&ws, cwd, "README.md");
         assert_eq!(file.file.as_deref(), Some("README.md"));
         assert!(file.symbol_path.is_none());
+    }
+
+    #[test]
+    fn file_targets_normalize_against_the_workspace_root() {
+        let ws = workspace();
+        // Queried from `src/`, matching an anchor recorded as `src/auth.rs`.
+        let node = build_query_node(&ws, Path::new("/proj/src"), "auth.rs");
+        assert_eq!(node.file.as_deref(), Some("src/auth.rs"));
+        // Same for a `file:line` target, which also feeds the source lookup.
+        let node = build_query_node(&ws, Path::new("/proj/src"), "auth.rs:12");
+        assert_eq!(node.file.as_deref(), Some("src/auth.rs"));
+        // A symbol target is not a path and is left alone.
+        let node = build_query_node(&ws, Path::new("/proj/src"), "AuthService::authenticate");
+        assert!(node.file.is_none());
+    }
+
+    #[test]
+    fn why_matches_an_anchor_when_queried_from_a_subdirectory() {
+        let db = temp_db();
+        let store = Store::open(&db).unwrap();
+        let id = seed(&store, "add retry with backoff", None, None);
+
+        // `src/auth.rs` recorded at the root, queried as `auth.rs` from `src/`.
+        let env = build(
+            &store,
+            &workspace(),
+            Path::new("/proj/src"),
+            &why_args(&db, "auth.rs"),
+        )
+        .unwrap();
+        assert_eq!(env.results.len(), 1);
+        assert_eq!(env.results[0].id, id);
+        let _ = std::fs::remove_file(&db);
     }
 
     #[test]
@@ -174,7 +232,13 @@ mod tests {
             None,
         );
 
-        let env = build(&store, &why_args(&db, "AuthService::authenticate")).unwrap();
+        let env = build(
+            &store,
+            &workspace(),
+            root(),
+            &why_args(&db, "AuthService::authenticate"),
+        )
+        .unwrap();
         // Symbol-only query can't confirm the hash, so it's drifted.
         assert_eq!(
             env.resolved.as_ref().unwrap().resolution,
@@ -194,13 +258,13 @@ mod tests {
         let old = seed(&store, "first attempt", Some("svc::f"), None);
         let new = seed(&store, "revised", Some("svc::f"), Some(&old));
 
-        let env = build(&store, &why_args(&db, "svc::f")).unwrap();
+        let env = build(&store, &workspace(), root(), &why_args(&db, "svc::f")).unwrap();
         let ids: Vec<&str> = env.results.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, vec![new.as_str()], "superseded `old` is hidden");
 
         let mut args = why_args(&db, "svc::f");
         args.include_superseded = true;
-        let env = build(&store, &args).unwrap();
+        let env = build(&store, &workspace(), root(), &args).unwrap();
         assert_eq!(env.results.len(), 2, "history includes superseded");
         let superseded_row = env.results.iter().find(|r| r.id == old).unwrap();
         assert!(superseded_row.superseded);
@@ -213,7 +277,13 @@ mod tests {
         let store = Store::open(&db).unwrap();
         seed(&store, "x", Some("svc::f"), None);
 
-        let env = build(&store, &why_args(&db, "totally::unknown")).unwrap();
+        let env = build(
+            &store,
+            &workspace(),
+            root(),
+            &why_args(&db, "totally::unknown"),
+        )
+        .unwrap();
         assert_eq!(env.resolved.unwrap().resolution, Resolution::FileFallback);
         assert!(env.results.is_empty());
         let _ = std::fs::remove_file(&db);
@@ -228,7 +298,7 @@ mod tests {
         }
         let mut args = why_args(&db, "svc::f");
         args.limit = 2;
-        let env = build(&store, &args).unwrap();
+        let env = build(&store, &workspace(), root(), &args).unwrap();
         assert_eq!(env.results.len(), 2);
         assert!(env.truncated);
         let _ = std::fs::remove_file(&db);

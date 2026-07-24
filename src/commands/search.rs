@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::cli::SearchArgs;
 use crate::commands::compact::{self, CompactRow};
-use crate::commands::{AppError, open_store};
+use crate::commands::{AppError, Workspace};
 use crate::output::{QueryEnvelope, emit};
 use crate::store::Store;
 
@@ -20,7 +20,7 @@ struct SearchDesc {
 }
 
 pub fn run(args: SearchArgs) -> Result<(), AppError> {
-    let store = open_store(args.db.clone())?;
+    let store = Workspace::discover(args.db.clone())?.open()?;
     let envelope = build(&store, &args)?;
     emit(&envelope);
     Ok(())

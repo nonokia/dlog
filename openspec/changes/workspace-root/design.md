@@ -78,8 +78,8 @@ file you are about to write), and the existing tests anchor to paths like
 3. If the result is under `root`, strip that prefix; otherwise keep it absolute —
    a decision may legitimately anchor outside the workspace, and silently
    rewriting it would be worse than an unusual-looking path.
-4. Join with `/` so the stored spelling is platform-independent (Windows `\`
-   separators in the input are normalized by going through `Path` components).
+4. Render with `/` separators so the stored spelling is platform-independent
+   (path components are re-joined rather than the string being rewritten).
 
 `cwd` is a parameter rather than being read inside the function so the normalizer
 is a pure function: `std::env::set_current_dir` is process-global and would make
@@ -130,6 +130,10 @@ on either, the implementation resolves `git rev-parse --show-toplevel` first,
 runs `git -C <toplevel> status --porcelain`, and treats the results as
 toplevel-relative before handing them to `relativize`. Outside a repo it stays
 best-effort and yields nothing, exactly as today.
+
+Paths at or under `.dlog/` are dropped: the store now reliably sits inside the
+tree it records, so git reports it as changed on every invocation, and a decision
+anchored to its own log is noise.
 
 ## Compatibility
 

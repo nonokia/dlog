@@ -384,6 +384,7 @@ v0.1 / v0.2 の実装後に本設計書と実コードを突き合わせた際�
 
 - **staging は物理2テーブルではなく単一 `decision` テーブル + `staged` フラグ**。§8.2 の意味論（可変な作業領域 → 不可侵の本ログ、「保留」は staging にのみ存在）は、CHECK 制約（staged 行は binding なし / sealed 行は commit+sha か none）と BEFORE UPDATE/DELETE トリガーでそのまま保存している。子テーブル重複を避けるための選択。
 - **`relocated` の曖昧性ガード**（v0.2 / #28）。§10.3 はグローバル hash 一致を即 `relocated` とするが、実装は hash が複数シンボルに衝突する場合のみ `relocated` を出さず `file_fallback` に格下げする（自信を持って誤った判断を浮上させないため）。併せて `structural_hash` に name-free の構造識別子（kind + arity + return 有無）をシードし、衝突率を下げている。
+- **ワークスペースルートの発見（`dlog init` / ルート相対アンカー）**（OpenSpec change `workspace-root`）。ストアの既定値は CWD 相対の `.dlog/dlog.db` だったため、サブディレクトリから実行すると別ストアが黙って生えてログが分裂し、アンカーのパス表記も揃わなかった。上位探索（`.dlog/` → `.git` → CWD）でルートを決め、アンカーと `why` / `context` のパスをルート相対に正規化する。§8.1「統合点はコミットの瞬間のみ」の裏返しとして、**プロジェクトルートは git ではなく dlog 自身が定義する概念**にした、という位置づけ。binding enum（§8.2）とシールのトリガー（§8.3）には手を付けていない。
 - **コンテキスト予算（`--budget` / `elided`）**（v0.2 / #33）。§11 で「v0.1 スコープ外」とした圧縮戦略を、`why` / `context` / `search` の payload 上限として実装。OpenSpec change として起票（§12 のワークフロー初適用）。原則2「状態で自己記述」に沿い、落とした live 件数を `elided` として返す。
 
 ### 現実解・未実装（設計意図は別手段で充足）

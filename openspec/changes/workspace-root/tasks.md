@@ -1,6 +1,6 @@
 # Tasks: Workspace Root Discovery + `dlog init`
 
-- [ ] **Task 1 — Root discovery + `Workspace` in the shared command layer**
+- [x] **Task 1 — Root discovery + `Workspace` in the shared command layer**
 
   In `src/commands/mod.rs`: add `RootSource` (`Dlog` / `Git` / `Cwd`, serialized
   as `"dlog"` / `"git"` / `"cwd"`), the pure `discover_root(from: &Path) ->
@@ -17,9 +17,9 @@
   is used when no `.dlog` exists, cwd is the fallback, discovery works from a
   nested directory; `relativize` handles a subdirectory-relative path, an
   absolute path inside the root, a path with `..`, a path outside the root
-  (stays absolute), a backslash-separated path, and a non-existent path.
+  (stays absolute), and a non-existent path.
 
-- [ ] **Task 2 — `dlog init`**
+- [x] **Task 2 — `dlog init`**
 
   New `src/commands/init.rs` emitting `{root, db, created, shadows?}`; `InitArgs`
   (`--db`) and a `Command::Init` variant + `name()` arm in `src/cli.rs`; dispatch
@@ -35,15 +35,16 @@
   `created: false`; a child of a dir with `.dlog/` reports `shadows`. Manually:
   `cd $(mktemp -d) && dlog init` prints the JSON and creates `.dlog/dlog.db`.
 
-- [ ] **Task 3 — Normalize paths in `record`**
+- [x] **Task 3 — Normalize paths in `record`**
 
   In `src/commands/record.rs`: build a `Workspace`, run every `--file` anchor
   path through `relativize`, and read source for `enrich_anchor` via
   `resolve_path` (pass the resolved path in rather than reading `anchor.file`).
   For `--changed`, resolve `git rev-parse --show-toplevel`, run
   `git -C <toplevel> status --porcelain`, join each porcelain path onto the
-  toplevel, then `relativize`; keep the outside-a-repo behavior (empty, so a
-  `--changed`-only invocation still reports `missing_anchor`).
+  toplevel, then `relativize`; drop paths at or under `.dlog/` (the store is
+  untracked, so git reports it every time); keep the outside-a-repo behavior
+  (empty, so a `--changed`-only invocation still reports `missing_anchor`).
 
   Touch: `src/commands/record.rs`.
 
@@ -51,7 +52,7 @@
   absolute path inside the root is stored root-relative, and that
   `parse_porcelain` output is joined against the toplevel.
 
-- [ ] **Task 4 — Normalize paths in `why` and `context`**
+- [x] **Task 4 — Normalize paths in `why` and `context`**
 
   In `src/commands/why.rs`, thread the `Workspace` and cwd into
   `build_query_node` / `node_for_file_line`: match the DB on the root-relative
@@ -64,7 +65,7 @@
   Verify: existing tests green (they pass root-relative paths already); add a
   `context` test that `"."` returns every decision.
 
-- [ ] **Task 5 — Workspace fields on `status`, and the mechanical migration**
+- [x] **Task 5 — Workspace fields on `status`, and the mechanical migration**
 
   In `src/commands/status.rs`, emit `root` / `db` / `root_source` alongside the
   flattened `StoreStatus`. Move the remaining `open_store` callers
@@ -76,7 +77,7 @@
   Verify: `cargo test --all-features`; `dlog status` JSON contains the three new
   fields.
 
-- [ ] **Task 6 — End-to-end check without git**
+- [x] **Task 6 — End-to-end check without git**
 
   In a temp directory with **no** `git init`: `dlog init`, record a decision
   anchored at `src/auth.rs`, then from `src/` run `status` (root points at the
@@ -88,7 +89,7 @@
 
   Verify: the sequence above behaves as described.
 
-- [ ] **Task 7 — Docs + gate**
+- [x] **Task 7 — Docs + gate**
 
   `templates/AGENTS.md`: mention `dlog init`, the store living at the workspace
   root, and that dlog works without git (sealing via `bind --none`).

@@ -39,8 +39,9 @@ pub fn run(args: HooksArgs) -> Result<(), AppError> {
             // Bake an absolute store path only when one is configured, so the
             // hook targets the right store even if a commit happens from an
             // environment without $DLOG_DB. With no explicit store the hook
-            // omits --db and uses the default `.dlog/dlog.db` relative to the
-            // repo root, which survives the repo being moved.
+            // omits --db and lets workspace discovery find the store (git runs
+            // hooks from the worktree top level), which survives the repo being
+            // moved.
             let db = args.db.as_deref().map(absolute_db);
             install(&hook_path, &bin.to_string_lossy(), db.as_deref())?
         }
