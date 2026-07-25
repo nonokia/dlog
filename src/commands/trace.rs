@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use crate::cli::TraceArgs;
 use crate::commands::compact::{self, CompactRow};
-use crate::commands::{AppError, open_store};
+use crate::commands::{AppError, Workspace};
 use crate::output::emit;
 use crate::store::Store;
 
@@ -46,7 +46,7 @@ struct TraceEnvelope {
 }
 
 pub fn run(args: TraceArgs) -> Result<(), AppError> {
-    let store = open_store(args.db.clone())?;
+    let store = Workspace::discover(args.db.clone())?.open()?;
 
     let root = store.get_decision(&args.id)?.ok_or_else(|| {
         AppError::new(

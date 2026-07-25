@@ -69,6 +69,7 @@ cargo test
 ## Commands
 
 ```text
+dlog init                                                     # mark this directory as the workspace root
 dlog record   --rationale <why> (--file <FILE[:LINES]> | --changed) [...]  # log a decision (to staging)
 dlog bind     <SHA> | --none [--decision <id>...]             # seal staged decisions
 dlog commit   [-- <git commit args>]                          # git commit, then auto-seal staging
@@ -85,9 +86,20 @@ dlog status                                                   # store state (sta
 Every command prints one JSON document; failures are `{"error":{...}}` (exit 1),
 usage errors exit 2. Agent identity comes from `--agent-role`/`--agent-model`
 (or `DLOG_AGENT_ROLE`/`DLOG_AGENT_MODEL`); the store path from `--db` or
-`DLOG_DB` (default `.dlog/dlog.db`). The list queries (`why`/`context`/`search`)
-bound their output to a `--budget` of characters and report `elided` when results
-are left out.
+`DLOG_DB` (default `<workspace root>/.dlog/dlog.db`). The list queries
+(`why`/`context`/`search`) bound their output to a `--budget` of characters and
+report `elided` when results are left out.
+
+### Workspace
+
+Commands resolve a **workspace root** by walking up from the current directory:
+the nearest ancestor with a `.dlog/`, else the nearest git repository, else the
+current directory. Anchors are stored relative to that root, so a decision
+records and resolves to the same file whichever subdirectory you run from.
+`dlog status` reports the root it picked and why (`root_source`).
+
+Git is optional. Only `dlog commit` and `dlog hooks` need it — run `dlog init` to
+declare a root without one, record as usual, and seal with `dlog bind --none`.
 
 ### Example
 

@@ -7,7 +7,7 @@
 use serde::Serialize;
 
 use crate::cli::ShowArgs;
-use crate::commands::{AppError, open_store};
+use crate::commands::{AppError, Workspace};
 use crate::model::StoredDecision;
 use crate::output::emit;
 use crate::store::Store;
@@ -37,7 +37,7 @@ struct InvariantOut {
 }
 
 pub fn run(args: ShowArgs) -> Result<(), AppError> {
-    let store = open_store(args.db)?;
+    let store = Workspace::discover(args.db)?.open()?;
 
     let mut results = Vec::new();
     let mut missing = Vec::new();

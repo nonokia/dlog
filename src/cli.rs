@@ -19,6 +19,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Create a dlog workspace in the current directory.
+    Init(InitArgs),
     /// Record a decision into staging (#5).
     // Boxed: RecordArgs is far larger than the other (unit) variants.
     Record(Box<RecordArgs>),
@@ -48,6 +50,7 @@ impl Command {
     /// Stable command name, used in diagnostics and JSON output.
     pub fn name(&self) -> &'static str {
         match self {
+            Command::Init(_) => "init",
             Command::Record(_) => "record",
             Command::Why(_) => "why",
             Command::Show(_) => "show",
@@ -61,6 +64,18 @@ impl Command {
             Command::Trace(_) => "trace",
         }
     }
+}
+
+/// Arguments for `dlog init` — mark the current directory as the workspace root
+/// by creating `.dlog/` there, so every later invocation resolves to this store
+/// no matter which subdirectory it runs from. Never required (discovery falls
+/// back to `.git`, then to the current directory), but it is how a project
+/// without git declares its root.
+#[derive(Debug, Args)]
+pub struct InitArgs {
+    /// Store path to initialize instead of `<root>/.dlog/dlog.db`.
+    #[arg(long = "db", env = "DLOG_DB")]
+    pub db: Option<String>,
 }
 
 /// Arguments for `dlog record` (design §7.3, §7.4).

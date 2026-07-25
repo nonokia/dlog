@@ -8,7 +8,7 @@
 use serde::Serialize;
 
 use crate::cli::InvariantsArgs;
-use crate::commands::{AppError, open_store};
+use crate::commands::{AppError, Workspace};
 use crate::output::emit;
 
 #[derive(Debug, Serialize)]
@@ -27,7 +27,7 @@ struct InvariantOut {
 }
 
 pub fn run(args: InvariantsArgs) -> Result<(), AppError> {
-    let store = open_store(args.db)?;
+    let store = Workspace::discover(args.db)?.open()?;
     let results = store
         .list_live_invariants()?
         .into_iter()

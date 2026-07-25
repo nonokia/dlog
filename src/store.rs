@@ -366,6 +366,12 @@ impl Store {
     /// boundary means `src/au` never matches `src/auth/...`; LIKE metacharacters
     /// in the path are escaped so they match literally.
     pub fn decision_ids_under_path(&self, path: &str) -> rusqlite::Result<Vec<String>> {
+        // `.` is the stored spelling of the workspace root, so it means the
+        // whole log — including the few anchors kept absolute because they point
+        // outside the workspace.
+        if path == "." {
+            return self.all_anchored_decision_ids();
+        }
         let under = format!("{}/%", like_escape(path));
         let mut stmt = self.conn.prepare(
             "SELECT DISTINCT decision_id FROM anchor
@@ -374,6 +380,18 @@ impl Store {
         )?;
         let ids = stmt
             .query_map(params![path, under], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
+    }
+
+    /// Every decision carrying an anchor, newest-first. Backs `dlog context .`
+    /// (the whole workspace).
+    fn all_anchored_decision_ids(&self) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT decision_id FROM anchor ORDER BY decision_id DESC")?;
+        let ids = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(ids)
     }

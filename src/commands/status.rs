@@ -1,16 +1,40 @@
 //! `dlog status` — store-wide state (design §8.3, §9.2).
 //!
-//! Reports unsealed staging (count and oldest, to surface staging that has gone
-//! stale after a bare `git commit`) and the schema version. Kept separate from
-//! query-result warnings: this is about the whole store, not one query (§9.3).
+//! Reports the workspace it resolved (which store is answering, and why that
+//! directory is the root) plus unsealed staging (count and oldest, to surface
+//! staging that has gone stale after a bare `git commit`) and the schema
+//! version. Kept separate from query-result warnings: this is about the whole
+//! store, not one query (§9.3).
+
+use serde::Serialize;
 
 use crate::cli::StatusArgs;
-use crate::commands::{AppError, open_store};
+use crate::commands::{AppError, RootSource, Workspace};
 use crate::output::emit;
+use crate::store::StoreStatus;
+
+/// Success document for `dlog status`: the workspace, then the store's own state.
+#[derive(Debug, Serialize)]
+struct StatusResult {
+    root: String,
+    db: String,
+    /// How the root was found — `dlog` (a `.dlog/` directory), `git`, or `cwd`.
+    /// Without this a split store is invisible: two directories can look
+    /// identical while answering from different logs.
+    root_source: RootSource,
+    #[serde(flatten)]
+    store: StoreStatus,
+}
 
 pub fn run(args: StatusArgs) -> Result<(), AppError> {
-    let store = open_store(args.db)?;
-    emit(&store.status()?);
+    let workspace = Workspace::discover(args.db)?;
+    let store = workspace.open()?;
+    emit(&StatusResult {
+        root: workspace.root.display().to_string(),
+        db: workspace.db.display().to_string(),
+        root_source: workspace.root_source,
+        store: store.status()?,
+    });
     Ok(())
 }
 

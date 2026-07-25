@@ -7,7 +7,7 @@
 use serde::Serialize;
 
 use crate::cli::RecordArgs;
-use crate::commands::{AppError, current_git_sha, open_store, parse_line_spec};
+use crate::commands::{AppError, DLOG_DIR, Workspace, current_git_sha, parse_line_spec};
 use crate::model::{Agent, Anchor, NewDecision, Rejected};
 use crate::output::emit;
 
@@ -25,16 +25,25 @@ pub fn run(args: RecordArgs) -> Result<(), AppError> {
     // Rationale: "-" reads from stdin so agents can pipe long prose unquoted.
     let rationale = resolve_rationale(&args.rationale)?;
 
-    let mut anchors: Vec<Anchor> = args.files.iter().map(|s| parse_anchor(s)).collect();
+    // Anchors are stored root-relative so the same file resolves identically
+    // whichever directory the agent recorded from.
+    let workspace = Workspace::discover(args.db)?;
+    let cwd = std::env::current_dir()?;
+
+    let mut anchors: Vec<Anchor> = args
+        .files
+        .iter()
+        .map(|s| parse_anchor(s, &workspace, &cwd))
+        .collect();
     // --changed: infer file-level anchors from the working tree, so a decision
     // about the current changes needn't list each file (lower friction, §7.3).
     // Union with explicit --file, de-duplicated by path.
     if args.changed {
         let have: std::collections::HashSet<String> =
             anchors.iter().map(|a| a.file.clone()).collect();
-        for file in git_changed_files() {
+        for file in git_changed_files(&workspace, &cwd) {
             if !have.contains(&file) {
-                anchors.push(parse_anchor(&file));
+                anchors.push(file_anchor(file));
             }
         }
     }
@@ -53,7 +62,7 @@ pub fn run(args: RecordArgs) -> Result<(), AppError> {
     // (§10.2). Best-effort: anything that doesn't resolve stays a file-level
     // anchor (§10.5), recording never fails because of it.
     for anchor in &mut anchors {
-        enrich_anchor(anchor);
+        enrich_anchor(anchor, &workspace);
         if anchor.recorded_at_sha.is_none() {
             anchor.recorded_at_sha = recorded_at_sha.clone();
         }
@@ -75,7 +84,7 @@ pub fn run(args: RecordArgs) -> Result<(), AppError> {
         anchors,
     };
 
-    let store = open_store(args.db)?;
+    let store = workspace.open()?;
 
     // A decision may reference a task; make sure the row exists so the FK holds.
     if let Some(task_id) = decision.task_id.as_deref() {
@@ -120,9 +129,21 @@ fn resolve_rationale(arg: &str) -> Result<String, AppError> {
 }
 
 /// Files changed in the working tree — staged, unstaged, and untracked — via
-/// `git status --porcelain`. Best-effort: empty outside a git repo or on error.
-fn git_changed_files() -> Vec<String> {
+/// `git status --porcelain`, as workspace-relative anchor paths. Best-effort:
+/// empty outside a git repo or on error.
+///
+/// Porcelain paths are reported relative to the repository root, so `git` is run
+/// from the toplevel and its output is joined back onto it before normalizing.
+/// That keeps the result independent of both the invocation directory and the
+/// `status.relativePaths` setting. Note the git root need not be the dlog root —
+/// `.dlog/` may sit above or below it.
+fn git_changed_files(workspace: &Workspace, cwd: &std::path::Path) -> Vec<String> {
+    let Some(toplevel) = git_toplevel() else {
+        return Vec::new();
+    };
     let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&toplevel)
         .args(["status", "--porcelain"])
         .output()
     else {
@@ -132,6 +153,32 @@ fn git_changed_files() -> Vec<String> {
         return Vec::new();
     }
     parse_porcelain(&String::from_utf8_lossy(&output.stdout))
+        .iter()
+        .map(|p| workspace.relativize(cwd, &toplevel.join(p).to_string_lossy()))
+        // The store lives inside the tree it records, so git reports it as
+        // changed on every invocation. A decision anchored to its own log is
+        // noise.
+        .filter(|p| !is_store_path(p))
+        .collect()
+}
+
+/// Whether a workspace-relative path is the dlog store directory or inside it.
+fn is_store_path(path: &str) -> bool {
+    path == DLOG_DIR || path.starts_with(&format!("{DLOG_DIR}/"))
+}
+
+/// The git repository root (`git rev-parse --show-toplevel`), or `None` outside
+/// a repo / when git is unavailable.
+fn git_toplevel() -> Option<std::path::PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!path.is_empty()).then(|| std::path::PathBuf::from(path))
 }
 
 /// Parse `git status --porcelain` into changed paths. Drops the 2-char status +
@@ -160,14 +207,15 @@ fn parse_porcelain(text: &str) -> Vec<String> {
 /// enclosing definition (§10.2), when the anchor names a readable file in a
 /// supported language with a line. Unsupported languages, unreadable paths, or
 /// lines not inside a definition are left as file-level anchors (§10.5).
-fn enrich_anchor(anchor: &mut Anchor) {
+fn enrich_anchor(anchor: &mut Anchor, workspace: &Workspace) {
     let Some((line, _)) = anchor.line_span else {
         return;
     };
     let Some(lang) = crate::anchor::language_for_path(&anchor.file) else {
         return;
     };
-    let Ok(source) = std::fs::read_to_string(&anchor.file) else {
+    // `anchor.file` is workspace-relative; read through the root, not the cwd.
+    let Ok(source) = std::fs::read_to_string(workspace.resolve_path(&anchor.file)) else {
         return;
     };
     if let Some(def) = crate::anchor::definition_at_line(&source, line, lang) {
@@ -180,9 +228,10 @@ fn enrich_anchor(anchor: &mut Anchor) {
 
 /// Parse an anchor spec: `FILE`, `FILE:LINE`, or `FILE:START-END`. The trailing
 /// `:...` is only treated as a line span when it parses as one; otherwise the
-/// whole string is the path. Symbol/structural fields start empty and are filled
-/// by [`enrich_rust_anchor`] when the source is available.
-fn parse_anchor(spec: &str) -> Anchor {
+/// whole string is the path. The path is normalized to its workspace-relative
+/// form. Symbol/structural fields start empty and are filled by [`enrich_anchor`]
+/// when the source is available.
+fn parse_anchor(spec: &str, workspace: &Workspace, cwd: &std::path::Path) -> Anchor {
     let (file, line_span) = match spec.rsplit_once(':') {
         Some((path, lines)) => match parse_line_spec(lines) {
             Some(span) => (path.to_string(), Some(span)),
@@ -191,11 +240,19 @@ fn parse_anchor(spec: &str) -> Anchor {
         None => (spec.to_string(), None),
     };
     Anchor {
+        line_span,
+        ..file_anchor(workspace.relativize(cwd, &file))
+    }
+}
+
+/// A bare file-level anchor on an already-normalized path (§10.5).
+fn file_anchor(file: String) -> Anchor {
+    Anchor {
         file,
         symbol_path: None,
         node_kind: None,
         structural_hash: None,
-        line_span,
+        line_span: None,
         recorded_at_sha: None,
     }
 }
@@ -220,11 +277,18 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
+    use crate::commands::RootSource;
     use crate::store::Store;
+
+    /// A workspace rooted at `/proj`, so anchor normalization is exercised
+    /// without depending on the process cwd.
+    fn workspace() -> Workspace {
+        Workspace::rooted(PathBuf::from("/proj"), RootSource::Dlog, None)
+    }
 
     #[test]
     fn parse_anchor_plain_file() {
-        let a = parse_anchor("src/lib.rs");
+        let a = parse_anchor("src/lib.rs", &workspace(), Path::new("/proj"));
         assert_eq!(a.file, "src/lib.rs");
         assert!(a.line_span.is_none());
         assert!(a.symbol_path.is_none());
@@ -232,16 +296,40 @@ mod tests {
 
     #[test]
     fn parse_anchor_single_line_and_range() {
-        assert_eq!(parse_anchor("src/lib.rs:12").line_span, Some((12, 12)));
-        assert_eq!(parse_anchor("src/lib.rs:10-45").line_span, Some((10, 45)));
+        let (ws, cwd) = (workspace(), Path::new("/proj"));
+        assert_eq!(
+            parse_anchor("src/lib.rs:12", &ws, cwd).line_span,
+            Some((12, 12))
+        );
+        assert_eq!(
+            parse_anchor("src/lib.rs:10-45", &ws, cwd).line_span,
+            Some((10, 45))
+        );
     }
 
     #[test]
     fn parse_anchor_non_line_suffix_is_part_of_path() {
         // A trailing colon that isn't a line spec stays in the path.
-        let a = parse_anchor("weird:name");
+        let a = parse_anchor("weird:name", &workspace(), Path::new("/proj"));
         assert_eq!(a.file, "weird:name");
         assert!(a.line_span.is_none());
+    }
+
+    #[test]
+    fn parse_anchor_normalizes_against_the_workspace_root() {
+        let ws = workspace();
+        // Recorded from a subdirectory: stored as if recorded from the root.
+        let a = parse_anchor("lib.rs:12", &ws, Path::new("/proj/src"));
+        assert_eq!(a.file, "src/lib.rs");
+        assert_eq!(a.line_span, Some((12, 12)));
+
+        // An absolute path inside the root collapses to the same anchor.
+        let a = parse_anchor("/proj/src/lib.rs", &ws, Path::new("/proj/src"));
+        assert_eq!(a.file, "src/lib.rs");
+
+        // Outside the workspace: kept absolute rather than silently rewritten.
+        let a = parse_anchor("/etc/hosts", &ws, Path::new("/proj/src"));
+        assert_eq!(a.file, "/etc/hosts");
     }
 
     #[test]
@@ -253,6 +341,15 @@ mod tests {
         let r = parse_rejected("just the approach");
         assert_eq!(r.approach, "just the approach");
         assert_eq!(r.reason, "");
+    }
+
+    #[test]
+    fn store_paths_are_not_anchored() {
+        // `.dlog/` shows up as untracked in every repo that uses dlog.
+        assert!(is_store_path(".dlog"));
+        assert!(is_store_path(".dlog/dlog.db"));
+        assert!(!is_store_path(".dlogger/x.rs"));
+        assert!(!is_store_path("src/.dlog.rs"));
     }
 
     #[test]

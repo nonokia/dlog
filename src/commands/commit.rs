@@ -10,7 +10,7 @@
 use serde::Serialize;
 
 use crate::cli::CommitArgs;
-use crate::commands::{AppError, current_git_sha, open_store};
+use crate::commands::{AppError, Workspace, current_git_sha};
 use crate::model::Binding;
 use crate::output::emit;
 use crate::store::Store;
@@ -44,7 +44,7 @@ pub fn run(args: CommitArgs) -> Result<(), AppError> {
     let sha = current_git_sha()
         .ok_or_else(|| AppError::new("git_no_head", "could not read HEAD after commit"))?;
 
-    let store = open_store(args.db)?;
+    let store = Workspace::discover(args.db)?.open()?;
     let only = if args.decisions.is_empty() {
         None
     } else {
