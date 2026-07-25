@@ -66,11 +66,24 @@ deal with them before starting:
 ```bash
 dlog status
 # {"root":"...","db":"...","root_source":"dlog","staging_count":N,
-#  "oldest_staged_ms":...,"schema_version":1}
+#  "oldest_staged_ms":...,"stranded_task_count":1,"schema_version":2,
+#  "stranded_tasks":[{"task":"01J...","instruction_summary":"...",
+#                     "staged_count":2,"oldest_staged_ms":...}]}
 ```
 
-If `staging_count > 0` and you know which commit they belong to, seal them with
-`dlog bind <sha>`; otherwise seal as non-code with `dlog bind --none`.
+`stranded_tasks` are **unfinished tasks that still hold unsealed decisions** —
+work an earlier session or a subagent recorded and never sealed. Pick each one
+up by its id rather than sealing blind:
+
+```bash
+dlog task list                       # every open task (add --all for finished ones)
+dlog show <id>                       # what it decided, if you need to judge it
+dlog task done 01J...                # finish it — seals only that task's decisions
+```
+
+If `staging_count` exceeds what the stranded tasks account for, the remainder was
+recorded without a `--task`. Seal that with `dlog bind <sha>` if you know the
+commit it belongs to, otherwise `dlog bind --none`.
 
 Then start a task and keep its id — it is what ties your decisions together and
 lets you seal exactly your own work at the end:
@@ -142,8 +155,13 @@ immutable log with a binding.
 
   ```bash
   dlog task done "$TASK"
-  # {"task":"01J...","count":N,"sealed":[...],"binding":{"type":"none"}}
+  # {"task":"01J...","count":N,"sealed":[...],"binding":{"type":"none"},
+  #  "completed_at_ms":178...}
   ```
+
+  This also marks the task finished, so it drops out of `dlog task list` and
+  stops being reported as stranded. Calling it again later still seals anything
+  newly recorded; the original completion time stands.
 
 **Subagents: always seal before you return.** Your on-the-ground decisions
 otherwise vanish when only a summary goes back to the parent. `dlog task done`
@@ -202,6 +220,8 @@ dlog invariants                       # live declared constraints
 dlog invariants --scope src/net       # constraints in effect under a path
 dlog context src/net/                 # decision summary for a path
 dlog trace <id>                       # walk the caused_by chain (causes/effects)
+dlog task list                        # open tasks: id, instruction, staged count
+dlog task list --all --parent <id>    # include finished ones / only one task's children
 ```
 
 Superseded decisions are hidden by default; add `--include-superseded` to

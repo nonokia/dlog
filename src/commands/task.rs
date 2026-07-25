@@ -14,9 +14,10 @@
 use serde::Serialize;
 
 use crate::cli::{TaskArgs, TaskCommand};
+use crate::commands::compact::{SUMMARY_MAX, summarize};
 use crate::commands::{AppError, Workspace};
 use crate::model::Binding;
-use crate::output::emit;
+use crate::output::{QueryEnvelope, emit};
 use crate::store::Store;
 
 /// Success document for `dlog task start`.
@@ -30,13 +31,45 @@ struct StartResult {
 }
 
 /// Success document for `dlog task done`. Mirrors `dlog bind`'s shape so an
-/// agent can treat the two seal paths alike.
+/// agent can treat the two seal paths alike, plus the completion stamp.
 #[derive(Debug, Serialize)]
 struct DoneResult {
     task: String,
     count: usize,
     sealed: Vec<String>,
     binding: Binding,
+    /// When the task was first finished — not necessarily now, since a second
+    /// `task done` is a follow-up seal rather than a re-completion.
+    completed_at_ms: i64,
+}
+
+/// Describes the interpreted `task list` query (§9.3).
+#[derive(Debug, Serialize)]
+struct ListQuery {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    /// `open` (the default) or `all`.
+    scope: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent: Option<String>,
+}
+
+/// One compact `task list` row (§9.1 principle 1): enough to decide whether to
+/// pick the task up, not the whole instruction.
+#[derive(Debug, Serialize)]
+struct TaskListRow {
+    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instruction_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_task_id: Option<String>,
+    /// Decisions under this task that are still unsealed.
+    staged_count: i64,
+    completed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_at_ms: Option<i64>,
+    /// Task start time, epoch milliseconds.
+    ts: i64,
 }
 
 pub fn run(args: TaskArgs) -> Result<(), AppError> {
@@ -48,6 +81,16 @@ pub fn run(args: TaskArgs) -> Result<(), AppError> {
         } => {
             let store = Workspace::discover(db)?.open()?;
             emit(&start(&store, parent.as_deref(), instruction.as_deref())?);
+        }
+        TaskCommand::List {
+            open: _,
+            all,
+            parent,
+            limit,
+            db,
+        } => {
+            let store = Workspace::discover(db)?.open()?;
+            emit(&list(&store, all, parent.as_deref(), limit)?);
         }
         TaskCommand::Done { id, db } => {
             let store = Workspace::discover(db)?.open()?;
@@ -76,17 +119,65 @@ fn start(
     })
 }
 
+/// List tasks in the compact form. `all` includes finished tasks (the `--open`
+/// flag is just the explicit spelling of the default, so it needs no branch).
+fn list(
+    store: &Store,
+    all: bool,
+    parent: Option<&str>,
+    limit: usize,
+) -> Result<QueryEnvelope<ListQuery, TaskListRow>, AppError> {
+    // A `--parent` that does not exist would silently return an empty list,
+    // which reads as "this task has no children" — the same trap `task start`
+    // avoids.
+    if let Some(parent) = parent {
+        require_task(store, parent)?;
+    }
+    let rows = store.list_tasks(all, parent)?;
+    let elided = rows.len().saturating_sub(limit);
+    let results = rows
+        .into_iter()
+        .take(limit)
+        .map(|t| TaskListRow {
+            id: t.id,
+            instruction_summary: t.instruction.map(|i| summarize(&i, SUMMARY_MAX)),
+            parent_task_id: t.parent_task_id,
+            staged_count: t.staged_count,
+            completed: t.completed_at_ms.is_some(),
+            completed_at_ms: t.completed_at_ms,
+            ts: t.created_at_ms,
+        })
+        .collect();
+
+    Ok(QueryEnvelope {
+        query: ListQuery {
+            kind: "task_list",
+            scope: if all { "all" } else { "open" },
+            parent: parent.map(str::to_string),
+        },
+        // Nothing here anchors to code, so there is no resolution to report.
+        resolved: None,
+        results,
+        truncated: elided > 0,
+        elided,
+    })
+}
+
 fn done(store: &Store, task_id: &str) -> Result<DoneResult, AppError> {
     require_task(store, task_id)?;
     let ids = store.staged_decision_ids_for_task(task_id)?;
     // Pass the ids explicitly even when empty: `None` means "seal every staged
     // decision in the store", which is precisely what this command must not do.
     let sealed = store.seal_staged(&Binding::None, Some(&ids))?;
+    // Stamped after the seal: completion means "this task's decisions are in
+    // the log", so a failed seal must not leave the task looking finished.
+    let completed_at_ms = store.complete_task(task_id)?;
     Ok(DoneResult {
         task: task_id.to_string(),
         count: sealed.len(),
         sealed,
         binding: Binding::None,
+        completed_at_ms,
     })
 }
 
@@ -200,6 +291,87 @@ mod tests {
         stage(&store, Some(&task), "one decision");
         assert_eq!(done(&store, &task).unwrap().count, 1);
         assert_eq!(done(&store, &task).unwrap().count, 0);
+    }
+
+    #[test]
+    fn done_stamps_the_first_completion_only() {
+        let store = Store::open_in_memory().unwrap();
+        let task = start(&store, None, None).unwrap().id;
+        stage(&store, Some(&task), "decided something");
+
+        let first = done(&store, &task).unwrap();
+        assert_eq!(first.count, 1);
+        assert!(first.completed_at_ms > 0);
+
+        // A follow-up seal reports the original completion time, not a new one.
+        stage(&store, Some(&task), "and one more thing");
+        let again = done(&store, &task).unwrap();
+        assert_eq!(again.count, 1);
+        assert_eq!(again.completed_at_ms, first.completed_at_ms);
+
+        // The task now reads as finished.
+        let all = list(&store, true, None, 20).unwrap();
+        assert!(all.results[0].completed);
+        assert_eq!(all.results[0].completed_at_ms, Some(first.completed_at_ms));
+        assert!(list(&store, false, None, 20).unwrap().results.is_empty());
+    }
+
+    #[test]
+    fn list_defaults_to_open_tasks_with_their_staged_counts() {
+        // The recovery path: an agent that lost its task id finds it here.
+        let store = Store::open_in_memory().unwrap();
+        let open = start(&store, None, Some("make the client resilient"))
+            .unwrap()
+            .id;
+        let finished = start(&store, None, None).unwrap().id;
+        stage(&store, Some(&open), "still deciding");
+        done(&store, &finished).unwrap();
+
+        let envelope = list(&store, false, None, 20).unwrap();
+        assert_eq!(envelope.query.scope, "open");
+        assert_eq!(envelope.results.len(), 1);
+        let row = &envelope.results[0];
+        assert_eq!(row.id, open);
+        assert_eq!(
+            row.instruction_summary.as_deref(),
+            Some("make the client resilient")
+        );
+        assert_eq!(row.staged_count, 1);
+        assert!(!row.completed);
+        assert!(row.completed_at_ms.is_none());
+        assert!(!envelope.truncated && envelope.elided == 0);
+
+        // --all brings the finished one back.
+        assert_eq!(list(&store, true, None, 20).unwrap().results.len(), 2);
+    }
+
+    #[test]
+    fn list_narrows_to_children_and_honours_the_limit() {
+        let store = Store::open_in_memory().unwrap();
+        let parent = start(&store, None, None).unwrap().id;
+        let child = start(&store, Some(&parent), None).unwrap().id;
+        start(&store, None, None).unwrap();
+
+        let kids = list(&store, false, Some(&parent), 20).unwrap();
+        assert_eq!(kids.results.len(), 1);
+        assert_eq!(kids.results[0].id, child);
+        assert_eq!(
+            kids.results[0].parent_task_id.as_deref(),
+            Some(parent.as_str())
+        );
+        assert_eq!(kids.query.parent.as_deref(), Some(parent.as_str()));
+
+        // Over the limit: rows are capped and the remainder is reported.
+        let capped = list(&store, false, None, 2).unwrap();
+        assert_eq!(capped.results.len(), 2);
+        assert!(capped.truncated);
+        assert_eq!(capped.elided, 1);
+
+        // An unknown parent is an error, not an empty list.
+        assert_eq!(
+            list(&store, false, Some("01NOPE"), 20).unwrap_err().code,
+            "unknown_task"
+        );
     }
 
     #[test]
