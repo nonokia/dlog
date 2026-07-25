@@ -25,6 +25,7 @@ pub fn run() -> i32 {
 
     let result = match cli.command {
         Command::Init(args) => commands::init::run(args),
+        Command::Task(args) => commands::task::run(args),
         Command::Record(args) => commands::record::run(*args),
         Command::Why(args) => commands::why::run(args),
         Command::Show(args) => commands::show::run(args),

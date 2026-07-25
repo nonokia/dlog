@@ -1,6 +1,6 @@
 # Tasks: Task Lifecycle — the non-code seal trigger
 
-- [ ] **Task 1 — Store queries for task-scoped sealing**
+- [x] **Task 1 — Store queries for task-scoped sealing**
 
   In `src/store.rs` add `task_exists(&self, id: &str) -> rusqlite::Result<bool>`
   and `staged_decision_ids_for_task(&self, task_id: &str) ->
@@ -13,7 +13,7 @@
   task only, sealed ones are excluded, and an unknown task yields an empty vec /
   `task_exists == false`.
 
-- [ ] **Task 2 — `dlog task` CLI surface**
+- [x] **Task 2 — `dlog task` CLI surface**
 
   In `src/cli.rs` add `TaskArgs { command: TaskCommand }` with a `TaskCommand`
   enum (`Start { parent, instruction, db }`, `Done { id, db }`), a
@@ -26,7 +26,7 @@
   parse; `dlog task` with no subcommand is a usage error (exit 2). Add cli tests
   alongside the existing ones.
 
-- [ ] **Task 3 — `dlog task start`**
+- [x] **Task 3 — `dlog task start`**
 
   New `src/commands/task.rs`. `start` validates `--parent` with `task_exists`
   (error `unknown_task`), then calls the so-far-unused `Store::insert_task` and
@@ -39,7 +39,7 @@
   real id is stored and round-trips; an unknown parent errors with
   `unknown_task`.
 
-- [ ] **Task 4 — `dlog task done`**
+- [x] **Task 4 — `dlog task done`**
 
   In `src/commands/task.rs`, `done` errors `unknown_task` for an unknown id,
   otherwise seals that task's staged decisions via
@@ -54,7 +54,7 @@
   staged returns `count: 0` and is not an error; an unknown id errors; a sealed
   decision reads back with `binding {"type":"none"}` and `staged: false`.
 
-- [ ] **Task 5 — Docs + gate**
+- [x] **Task 5 — Docs + gate**
 
   `templates/AGENTS.md`: add the `task start` → `record --task` → `task done`
   flow, and make the subagent rule point at `task done` (keeping `bind --none`

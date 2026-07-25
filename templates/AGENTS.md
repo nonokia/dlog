@@ -54,7 +54,7 @@ dlog init
 ```
 
 Git is optional — only `dlog commit` and `dlog hooks` require it. Without git,
-record as usual and seal with `dlog bind --none` at the end of the task.
+record as usual and seal with `dlog task done` at the end of the task.
 
 ## At the start of a task
 
@@ -72,6 +72,15 @@ dlog status
 If `staging_count > 0` and you know which commit they belong to, seal them with
 `dlog bind <sha>`; otherwise seal as non-code with `dlog bind --none`.
 
+Then start a task and keep its id — it is what ties your decisions together and
+lets you seal exactly your own work at the end:
+
+```bash
+TASK=$(dlog task start --instruction "<the human's original ask>" | jq -r .id)
+# subagents: pass the parent's id
+# TASK=$(dlog task start --parent "$PARENT_TASK" --instruction "..." | jq -r .id)
+```
+
 ## Record a decision (the moment you make one)
 
 Record **as you decide**, before committing — rejected attempts never reach a
@@ -79,7 +88,7 @@ commit, so commit-time-only recording loses them. Keep it low-friction: only
 `--rationale`, at least one `--file` anchor, and your identity are required.
 
 ```bash
-dlog record \
+dlog record --task "$TASK" \
   --rationale "retry with exponential backoff; the upstream API is flaky" \
   --file src/net/client.rs:42 \
   --agent-role implementer --agent-model <your-model-id>
@@ -113,7 +122,6 @@ Optional, when useful:
 - `--supersedes <id>` — this decision reverses/replaces an earlier one.
 - `--caused-by <id>` (repeatable) — this decision was prompted by another (e.g. a
   review comment).
-- `--task <id>` `--instruction "the original human ask"` — tie decisions to a task.
 - `--conversation-id <id>` — link to the conversation/transcript.
 
 ## Seal decisions
@@ -129,15 +137,23 @@ immutable log with a binding.
   # {"count":N,"sealed":[...],"binding":{"type":"commit","sha":"..."}}
   ```
 
-- **At the end of a task with no commit** (investigation, review), seal as none:
+- **At the end of a task with no commit** (investigation, review), finish the
+  task:
 
   ```bash
-  dlog bind --none
+  dlog task done "$TASK"
+  # {"task":"01J...","count":N,"sealed":[...],"binding":{"type":"none"}}
   ```
 
 **Subagents: always seal before you return.** Your on-the-ground decisions
-otherwise vanish when only a summary goes back to the parent. Sealing as
-`--none` at task end preserves them.
+otherwise vanish when only a summary goes back to the parent. `dlog task done`
+at the end of your task preserves them.
+
+Use `dlog task done`, not `dlog bind --none`, to finish a task: `bind --none`
+seals *everything* currently staged, so it would also bind the parent's (or a
+sibling's) in-progress decisions to "no commit" — and sealed records are
+immutable. `bind --none` is the escape hatch for staging you found stranded at
+task start, not the normal end-of-task move.
 
 (Restrict a seal to specific decisions with `--decision <id>` if needed.)
 
@@ -213,7 +229,7 @@ Two complementary aids:
   ```sh
   # fires when the agent stops; reminds if anything is still unsealed
   if [ "$(dlog status | grep -o '"staging_count":[0-9]*' | cut -d: -f2)" != "0" ]; then
-    echo "dlog: unsealed decisions in staging — run 'dlog bind --none' (or commit) before ending."
+    echo "dlog: unsealed decisions in staging — run 'dlog task done <id>' (or commit) before ending."
   fi
   ```
 

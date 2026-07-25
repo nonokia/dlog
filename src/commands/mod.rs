@@ -12,6 +12,7 @@ pub mod record;
 pub mod search;
 pub mod show;
 pub mod status;
+pub mod task;
 pub mod trace;
 pub mod why;
 
