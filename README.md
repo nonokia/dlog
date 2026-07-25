@@ -57,8 +57,14 @@ cargo test
 - **Decision** — the append-only main log. A reversed decision is a *new*
   decision with `--supersedes`; records are never mutated.
 - **Staging + seal** — decisions are born before a commit, so they go to a
-  mutable staging area first; `dlog bind` seals them into the immutable log with
-  a binding (`{type:commit,sha}` or `{type:none}`).
+  mutable staging area first; sealing moves them into the immutable log with a
+  binding. Two triggers: the code path (`dlog commit` / `dlog bind <sha>` →
+  `{type:commit,sha}`) and the non-code path (`dlog task done` → `{type:none}`,
+  for investigation or review that led to no commit).
+- **Task** — a unit of work with the human's original instruction and an
+  optional parent, so multi-agent hand-offs keep their structure. `dlog task
+  done` seals only *that* task's decisions, so a subagent finishing up can't
+  seal work another agent still has in flight.
 - **AST-node anchors** — decisions anchor to named definitions (not line
   numbers), so they survive refactors. Identity is judged **at query time** and
   surfaced as a `resolution` (`exact` / `drifted` / `relocated` / `file_fallback`).
@@ -70,6 +76,8 @@ cargo test
 
 ```text
 dlog init                                                     # mark this directory as the workspace root
+dlog task start [--parent <id>] [--instruction <text>]        # start a task, get its id
+dlog task done  <id>                                          # finish a task, sealing its decisions (binding: none)
 dlog record   --rationale <why> (--file <FILE[:LINES]> | --changed) [...]  # log a decision (to staging)
 dlog bind     <SHA> | --none [--decision <id>...]             # seal staged decisions
 dlog commit   [-- <git commit args>]                          # git commit, then auto-seal staging
@@ -99,16 +107,21 @@ records and resolves to the same file whichever subdirectory you run from.
 `dlog status` reports the root it picked and why (`root_source`).
 
 Git is optional. Only `dlog commit` and `dlog hooks` need it — run `dlog init` to
-declare a root without one, record as usual, and seal with `dlog bind --none`.
+declare a root without one, record as usual, and seal with `dlog task done`.
 
 ### Example
 
 ```bash
-dlog record --rationale "retry with backoff; upstream API is flaky" \
+TASK=$(dlog task start --instruction "make the API client resilient" | jq -r .id)
+
+dlog record --task "$TASK" \
+            --rationale "retry with backoff; upstream API is flaky" \
             --file src/net/client.rs:42 \
             --rejected "fixed sleep :: too slow under load" \
             --agent-role implementer --agent-model <model-id>
 dlog commit -- -m "add retry"      # git commit + auto-seal staging to it
+# no commit to make? seal the task instead:
+dlog task done "$TASK"             # -> binding {"type":"none"}
 
 dlog why src/net/client.rs:42      # -> resolution + compact results
 dlog context src/net/              # -> decisions across the directory

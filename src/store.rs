@@ -115,6 +115,32 @@ impl Store {
         Ok(())
     }
 
+    /// Whether a task row exists. Used to reject an unknown `--parent` or
+    /// `task done <id>` with a specific error instead of a foreign-key failure
+    /// or a silent no-op.
+    pub fn task_exists(&self, id: &str) -> rusqlite::Result<bool> {
+        let found: Option<i64> = self
+            .conn
+            .query_row("SELECT 1 FROM task WHERE id = ?1", params![id], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    /// Staged decisions belonging to `task_id`, oldest-first. Backs the
+    /// non-code seal (`dlog task done`, §8.3): a finishing agent seals its own
+    /// task's decisions, not everything currently in staging.
+    pub fn staged_decision_ids_for_task(&self, task_id: &str) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM decision WHERE task_id = ?1 AND staged = 1 ORDER BY id")?;
+        let ids = stmt
+            .query_map(params![task_id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
+    }
+
     // ---- Decisions --------------------------------------------------------
 
     /// Write a new decision into staging (§8.2) together with its anchors, in a
@@ -692,6 +718,64 @@ mod tests {
         store.seal(&id, &Binding::None).unwrap();
         let d = store.get_decision(&id).unwrap().unwrap();
         assert_eq!(d.binding, Some(Binding::None));
+    }
+
+    #[test]
+    fn staged_ids_are_scoped_to_their_task() {
+        let store = Store::open_in_memory().unwrap();
+        let mine = store.insert_task(None, Some("resilience")).unwrap();
+        let theirs = store.insert_task(None, None).unwrap();
+
+        let a = store
+            .stage_decision(&NewDecision {
+                task_id: Some(mine.clone()),
+                ..minimal("mine, staged")
+            })
+            .unwrap();
+        let sealed = store
+            .stage_decision(&NewDecision {
+                task_id: Some(mine.clone()),
+                ..minimal("mine, already sealed")
+            })
+            .unwrap();
+        store.seal(&sealed, &Binding::None).unwrap();
+        store
+            .stage_decision(&NewDecision {
+                task_id: Some(theirs.clone()),
+                ..minimal("another agent's, still in flight")
+            })
+            .unwrap();
+        store.stage_decision(&minimal("no task at all")).unwrap();
+
+        // Only this task's *staged* decisions — not sealed ones, not another
+        // task's, not the task-less ones.
+        assert_eq!(store.staged_decision_ids_for_task(&mine).unwrap(), vec![a]);
+        assert_eq!(
+            store.staged_decision_ids_for_task("nope").unwrap(),
+            Vec::<String>::new()
+        );
+
+        assert!(store.task_exists(&mine).unwrap());
+        assert!(store.task_exists(&theirs).unwrap());
+        assert!(!store.task_exists("nope").unwrap());
+    }
+
+    #[test]
+    fn insert_task_records_the_hierarchy() {
+        let store = Store::open_in_memory().unwrap();
+        let parent = store.insert_task(None, Some("ship the feature")).unwrap();
+        let child = store.insert_task(Some(&parent), None).unwrap();
+
+        let got: (Option<String>, Option<String>) = store
+            .conn
+            .query_row(
+                "SELECT parent_task_id, instruction FROM task WHERE id = ?1",
+                params![child],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(got.0.as_deref(), Some(parent.as_str()));
+        assert_eq!(got.1, None);
     }
 
     #[test]

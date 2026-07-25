@@ -21,6 +21,8 @@ pub struct Cli {
 pub enum Command {
     /// Create a dlog workspace in the current directory.
     Init(InitArgs),
+    /// Start a task, or finish one and seal its decisions (design §8.3).
+    Task(TaskArgs),
     /// Record a decision into staging (#5).
     // Boxed: RecordArgs is far larger than the other (unit) variants.
     Record(Box<RecordArgs>),
@@ -51,6 +53,7 @@ impl Command {
     pub fn name(&self) -> &'static str {
         match self {
             Command::Init(_) => "init",
+            Command::Task(_) => "task",
             Command::Record(_) => "record",
             Command::Why(_) => "why",
             Command::Show(_) => "show",
@@ -76,6 +79,47 @@ pub struct InitArgs {
     /// Store path to initialize instead of `<root>/.dlog/dlog.db`.
     #[arg(long = "db", env = "DLOG_DB")]
     pub db: Option<String>,
+}
+
+/// Arguments for `dlog task` (design §7.1, §8.3) — the task hierarchy and the
+/// non-code seal trigger.
+#[derive(Debug, Args)]
+pub struct TaskArgs {
+    #[command(subcommand)]
+    pub command: TaskCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TaskCommand {
+    /// Create a task and return its id, to pass to `record --task`.
+    Start {
+        /// Parent task, forming the task hierarchy (§4, §7.1).
+        #[arg(long = "parent", value_name = "TASK_ID")]
+        parent: Option<String>,
+
+        /// The human's original instruction for this task (§7.1).
+        #[arg(long)]
+        instruction: Option<String>,
+
+        /// Store path. Defaults to $DLOG_DB, else `<root>/.dlog/dlog.db`.
+        #[arg(long = "db", env = "DLOG_DB")]
+        db: Option<String>,
+    },
+    /// Finish a task, sealing its staged decisions with `binding: none`.
+    ///
+    /// This is the non-code seal of §8.3 — investigation or review that led to
+    /// no commit. Unlike `dlog bind --none` it touches only this task's
+    /// decisions, so a subagent finishing up cannot seal work another agent
+    /// still has in flight.
+    Done {
+        /// Task to finish.
+        #[arg(value_name = "TASK_ID")]
+        id: String,
+
+        /// Store path. Defaults to $DLOG_DB, else `<root>/.dlog/dlog.db`.
+        #[arg(long = "db", env = "DLOG_DB")]
+        db: Option<String>,
+    },
 }
 
 /// Arguments for `dlog record` (design §7.3, §7.4).
@@ -461,6 +505,66 @@ mod tests {
                 assert_eq!(args.agent_role, "implementer");
             }
             _ => panic!("expected record"),
+        }
+    }
+
+    #[test]
+    fn task_requires_a_subcommand_and_done_requires_an_id() {
+        assert!(Cli::try_parse_from(["dlog", "task"]).is_err());
+        assert!(Cli::try_parse_from(["dlog", "task", "done"]).is_err());
+
+        let cli = Cli::try_parse_from(["dlog", "task", "done", "01K"]).expect("task done parses");
+        assert_eq!(cli.command.name(), "task");
+        match cli.command {
+            Command::Task(args) => match args.command {
+                TaskCommand::Done { id, .. } => assert_eq!(id, "01K"),
+                _ => panic!("expected done"),
+            },
+            _ => panic!("expected task"),
+        }
+    }
+
+    #[test]
+    fn task_start_takes_optional_parent_and_instruction() {
+        let cli = Cli::try_parse_from(["dlog", "task", "start"]).expect("bare start parses");
+        match cli.command {
+            Command::Task(args) => match args.command {
+                TaskCommand::Start {
+                    parent,
+                    instruction,
+                    ..
+                } => {
+                    assert!(parent.is_none());
+                    assert!(instruction.is_none());
+                }
+                _ => panic!("expected start"),
+            },
+            _ => panic!("expected task"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "dlog",
+            "task",
+            "start",
+            "--parent",
+            "01PARENT",
+            "--instruction",
+            "make it resilient",
+        ])
+        .expect("start with flags parses");
+        match cli.command {
+            Command::Task(args) => match args.command {
+                TaskCommand::Start {
+                    parent,
+                    instruction,
+                    ..
+                } => {
+                    assert_eq!(parent.as_deref(), Some("01PARENT"));
+                    assert_eq!(instruction.as_deref(), Some("make it resilient"));
+                }
+                _ => panic!("expected start"),
+            },
+            _ => panic!("expected task"),
         }
     }
 
