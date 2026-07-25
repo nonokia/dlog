@@ -105,6 +105,33 @@ pub enum TaskCommand {
         #[arg(long = "db", env = "DLOG_DB")]
         db: Option<String>,
     },
+    /// List tasks in the compact form: what is still in flight, and what each
+    /// one still has unsealed.
+    ///
+    /// Open tasks only by default — the question this answers is "what can I
+    /// still pick up?". An id recovered here is what `record --task` and
+    /// `task done` need (§9.1).
+    List {
+        /// Only tasks that have not been finished (the default).
+        #[arg(long, conflicts_with = "all")]
+        open: bool,
+
+        /// Include finished tasks.
+        #[arg(long)]
+        all: bool,
+
+        /// Only the children of this task (§4, §7.1).
+        #[arg(long = "parent", value_name = "TASK_ID")]
+        parent: Option<String>,
+
+        /// Maximum results before truncating.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+
+        /// Store path. Defaults to $DLOG_DB, else `<root>/.dlog/dlog.db`.
+        #[arg(long = "db", env = "DLOG_DB")]
+        db: Option<String>,
+    },
     /// Finish a task, sealing its staged decisions with `binding: none`.
     ///
     /// This is the non-code seal of §8.3 — investigation or review that led to
@@ -563,6 +590,44 @@ mod tests {
                     assert_eq!(instruction.as_deref(), Some("make it resilient"));
                 }
                 _ => panic!("expected start"),
+            },
+            _ => panic!("expected task"),
+        }
+    }
+
+    #[test]
+    fn task_list_defaults_to_open_and_rejects_open_with_all() {
+        let cli = Cli::try_parse_from(["dlog", "task", "list"]).expect("bare list parses");
+        match cli.command {
+            Command::Task(args) => match args.command {
+                TaskCommand::List {
+                    open,
+                    all,
+                    parent,
+                    limit,
+                    ..
+                } => {
+                    assert!(!open && !all, "neither flag set means open-only");
+                    assert!(parent.is_none());
+                    assert_eq!(limit, 20);
+                }
+                _ => panic!("expected list"),
+            },
+            _ => panic!("expected task"),
+        }
+
+        // The two scopes are mutually exclusive.
+        assert!(Cli::try_parse_from(["dlog", "task", "list", "--open", "--all"]).is_err());
+
+        let cli = Cli::try_parse_from(["dlog", "task", "list", "--all", "--parent", "01P"])
+            .expect("list with flags parses");
+        match cli.command {
+            Command::Task(args) => match args.command {
+                TaskCommand::List { all, parent, .. } => {
+                    assert!(all);
+                    assert_eq!(parent.as_deref(), Some("01P"));
+                }
+                _ => panic!("expected list"),
             },
             _ => panic!("expected task"),
         }

@@ -64,7 +64,9 @@ cargo test
 - **Task** — a unit of work with the human's original instruction and an
   optional parent, so multi-agent hand-offs keep their structure. `dlog task
   done` seals only *that* task's decisions, so a subagent finishing up can't
-  seal work another agent still has in flight.
+  seal work another agent still has in flight. A task whose decisions were never
+  sealed is named by `dlog status` as a *stranded task*, so the next agent can
+  pick it up by id instead of sealing blind.
 - **AST-node anchors** — decisions anchor to named definitions (not line
   numbers), so they survive refactors. Identity is judged **at query time** and
   surfaced as a `resolution` (`exact` / `drifted` / `relocated` / `file_fallback`).
@@ -77,6 +79,7 @@ cargo test
 ```text
 dlog init                                                     # mark this directory as the workspace root
 dlog task start [--parent <id>] [--instruction <text>]        # start a task, get its id
+dlog task list  [--open | --all] [--parent <id>]              # tasks in flight, with their unsealed counts
 dlog task done  <id>                                          # finish a task, sealing its decisions (binding: none)
 dlog record   --rationale <why> (--file <FILE[:LINES]> | --changed) [...]  # log a decision (to staging)
 dlog bind     <SHA> | --none [--decision <id>...]             # seal staged decisions
@@ -88,7 +91,7 @@ dlog trace    <id> [--depth <n>]                              # walk the caused_
 dlog show     <id>...                                         # full record(s)
 dlog search   --text <query>                                  # full-text search (FTS5)
 dlog invariants [--scope <path>]                              # live declared constraints
-dlog status                                                   # store state (staging, schema)
+dlog status                                                   # store state (staging, stranded tasks, schema)
 ```
 
 Every command prints one JSON document; failures are `{"error":{...}}` (exit 1),

@@ -9,10 +9,66 @@ use ulid::Ulid;
 
 use crate::model::{Agent, Anchor, Binding, NewDecision, Rejected, StoredDecision};
 
-/// Bump when `schema.sql` changes incompatibly.
-pub const SCHEMA_VERSION: i64 = 1;
+/// Schema migrations, in application order. A migration's version is its
+/// 1-based position: `MIGRATIONS[0]` takes an empty store to version 1.
+/// Position *is* the version, so the two can never disagree.
+///
+/// Entry 0 (`schema.sql`) is the frozen baseline every existing store already
+/// carries, and stays idempotent. Later entries are applied **exactly once**,
+/// which is what buys the `ALTER TABLE` path SQLite has no `IF NOT EXISTS` for
+/// (#60). A migration must not open its own transaction — [`Store::migrate`]
+/// wraps the whole batch in one.
+const MIGRATIONS: &[&str] = &[
+    include_str!("schema.sql"),
+    include_str!("migrations/002_task_completed_at.sql"),
+];
 
-const SCHEMA_SQL: &str = include_str!("schema.sql");
+/// The schema version this binary understands. A store above it is refused
+/// ([`OpenError::SchemaTooNew`]); a store below it is migrated up on open.
+pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
+
+/// Bootstrap DDL for the version ledger. `schema_meta` is defined inside the v1
+/// baseline, so on an empty store the version has to be readable before the
+/// migration that creates the table has run. Same statement, and replaying it
+/// is free.
+const SCHEMA_META_DDL: &str =
+    "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);";
+
+/// Failure opening a store. Distinct from [`rusqlite::Error`] so that a store
+/// written by a newer dlog is a condition an agent can branch on rather than an
+/// opaque store error.
+#[derive(Debug)]
+pub enum OpenError {
+    Sqlite(rusqlite::Error),
+    /// The store's schema is newer than this binary understands. Carrying on
+    /// would mean answering queries from tables whose meaning has changed, so
+    /// it is reported instead (upgrade dlog).
+    SchemaTooNew {
+        found: i64,
+        supported: i64,
+    },
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpenError::Sqlite(e) => write!(f, "{e}"),
+            OpenError::SchemaTooNew { found, supported } => write!(
+                f,
+                "store schema version {found} is newer than this dlog supports \
+                 (up to {supported}); upgrade dlog to read it"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for OpenError {}
+
+impl From<rusqlite::Error> for OpenError {
+    fn from(e: rusqlite::Error) -> Self {
+        OpenError::Sqlite(e)
+    }
+}
 
 /// A live invariant with provenance, returned by [`Store::list_live_invariants`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +88,34 @@ pub struct StoreStatus {
     /// Timestamp (epoch ms) of the oldest staged decision, if any — surfaces
     /// staging that has gone stale (§8.3).
     pub oldest_staged_ms: Option<i64>,
+    /// How many unfinished tasks still hold staged decisions. The untruncated
+    /// total behind [`Store::stranded_tasks`] (#61).
+    pub stranded_task_count: i64,
     pub schema_version: i64,
+}
+
+/// One row of `dlog task list` (§9.1 compact form). The instruction is returned
+/// whole; summarising it is the command layer's job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskRow {
+    pub id: String,
+    pub parent_task_id: Option<String>,
+    pub instruction: Option<String>,
+    /// Decisions recorded under this task that are still unsealed.
+    pub staged_count: i64,
+    /// When `dlog task done` first finished the task; `None` while open.
+    pub completed_at_ms: Option<i64>,
+    pub created_at_ms: i64,
+}
+
+/// An unfinished task that still holds staged decisions — the per-task view of
+/// stranded staging that `staging_count` alone cannot give (§8.3, #61).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StrandedTask {
+    pub task: String,
+    pub instruction: Option<String>,
+    pub staged_count: i64,
+    pub oldest_staged_ms: i64,
 }
 
 /// A handle to the SQLite-backed decision log.
@@ -42,41 +125,69 @@ pub struct Store {
 
 impl Store {
     /// Open an on-disk store, creating/migrating the schema as needed.
-    pub fn open(path: impl AsRef<std::path::Path>) -> rusqlite::Result<Self> {
+    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, OpenError> {
         Self::init(Connection::open(path)?)
     }
 
     /// Open a private in-memory store (tests, throwaway use).
-    pub fn open_in_memory() -> rusqlite::Result<Self> {
+    pub fn open_in_memory() -> Result<Self, OpenError> {
         Self::init(Connection::open_in_memory()?)
     }
 
-    fn init(conn: Connection) -> rusqlite::Result<Self> {
+    fn init(conn: Connection) -> Result<Self, OpenError> {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let store = Self { conn };
         store.migrate()?;
         Ok(store)
     }
 
-    /// Apply the schema. Idempotent: the DDL is all `IF NOT EXISTS`, and the
-    /// version row is inserted once.
-    fn migrate(&self) -> rusqlite::Result<()> {
-        self.conn.execute_batch(SCHEMA_SQL)?;
-        self.conn.execute(
+    /// Bring the store up to [`SCHEMA_VERSION`], applying only the migrations it
+    /// has not seen (#60). Idempotent: an already-current store does no work.
+    ///
+    /// The whole batch runs in one transaction — SQLite executes DDL
+    /// transactionally, so a migration that fails leaves the store at its
+    /// previous version rather than half-migrated.
+    fn migrate(&self) -> Result<(), OpenError> {
+        // The ledger first: on an empty store its own table doesn't exist yet.
+        self.conn.execute_batch(SCHEMA_META_DDL)?;
+        let current = self.schema_version()?;
+        if current > SCHEMA_VERSION {
+            return Err(OpenError::SchemaTooNew {
+                found: current,
+                supported: SCHEMA_VERSION,
+            });
+        }
+        if current == SCHEMA_VERSION {
+            return Ok(());
+        }
+
+        let tx = self.conn.unchecked_transaction()?;
+        for sql in MIGRATIONS.iter().skip(current.max(0) as usize) {
+            tx.execute_batch(sql)?;
+        }
+        // DO UPDATE, not DO NOTHING: writing the version once is exactly why it
+        // never moved before.
+        tx.execute(
             "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?1)
-             ON CONFLICT(key) DO NOTHING",
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![SCHEMA_VERSION.to_string()],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
-    /// The schema version recorded in the store.
+    /// The schema version recorded in the store; 0 when nothing has been applied
+    /// yet (a fresh file), so migration starts from the beginning.
     pub fn schema_version(&self) -> rusqlite::Result<i64> {
-        self.conn.query_row(
-            "SELECT value FROM schema_meta WHERE key = 'schema_version'",
-            [],
-            |r| Ok(r.get::<_, String>(0)?.parse().unwrap_or(0)),
-        )
+        let recorded: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(recorded.and_then(|v| v.parse().ok()).unwrap_or(0))
     }
 
     // ---- Task -------------------------------------------------------------
@@ -126,6 +237,84 @@ impl Store {
             })
             .optional()?;
         Ok(found.is_some())
+    }
+
+    /// Mark a task finished, stamping the completion time (§7.1, #61).
+    ///
+    /// The `IS NULL` guard makes the *first* completion the recorded one: a
+    /// second `dlog task done` is a follow-up seal, and overwriting would lose
+    /// the one fact the column carries — when the work was declared done.
+    /// Returns the effective `completed_at_ms`, which may predate this call.
+    pub fn complete_task(&self, id: &str) -> rusqlite::Result<i64> {
+        self.conn.execute(
+            "UPDATE task SET completed_at_ms = ?2
+             WHERE id = ?1 AND completed_at_ms IS NULL",
+            params![id, Ulid::new().timestamp_ms() as i64],
+        )?;
+        self.conn.query_row(
+            "SELECT completed_at_ms FROM task WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+    }
+
+    /// Tasks in the compact list form, newest-first (ULIDs are time-sortable).
+    /// Open tasks only unless `include_completed`; `parent` narrows to one
+    /// task's children. Backs `dlog task list` (#61).
+    pub fn list_tasks(
+        &self,
+        include_completed: bool,
+        parent: Option<&str>,
+    ) -> rusqlite::Result<Vec<TaskRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.id, t.parent_task_id, t.instruction, t.created_at_ms,
+                    t.completed_at_ms,
+                    (SELECT COUNT(*) FROM decision d
+                      WHERE d.task_id = t.id AND d.staged = 1) AS staged_count
+             FROM task t
+             WHERE (?1 = 1 OR t.completed_at_ms IS NULL)
+               AND (?2 IS NULL OR t.parent_task_id = ?2)
+             ORDER BY t.id DESC",
+        )?;
+        let rows = stmt
+            .query_map(params![include_completed, parent], |r| {
+                Ok(TaskRow {
+                    id: r.get(0)?,
+                    parent_task_id: r.get(1)?,
+                    instruction: r.get(2)?,
+                    created_at_ms: r.get(3)?,
+                    completed_at_ms: r.get(4)?,
+                    staged_count: r.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Unfinished tasks that still hold staged decisions, newest-first, capped
+    /// at `limit`. The join is what connects the two facts `dlog status` could
+    /// previously only report separately (§8.3).
+    pub fn stranded_tasks(&self, limit: usize) -> rusqlite::Result<Vec<StrandedTask>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.id, t.instruction, COUNT(d.id), MIN(d.created_at_ms)
+             FROM task t
+             JOIN decision d ON d.task_id = t.id AND d.staged = 1
+             WHERE t.completed_at_ms IS NULL
+             GROUP BY t.id
+             ORDER BY t.id DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![limit as i64], |r| {
+                Ok(StrandedTask {
+                    task: r.get(0)?,
+                    instruction: r.get(1)?,
+                    staged_count: r.get(2)?,
+                    oldest_staged_ms: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// Staged decisions belonging to `task_id`, oldest-first. Backs the
@@ -554,9 +743,18 @@ impl Store {
             [],
             |r| r.get::<_, Option<i64>>(0),
         )?;
+        let stranded_task_count = self.conn.query_row(
+            "SELECT COUNT(DISTINCT t.id)
+             FROM task t
+             JOIN decision d ON d.task_id = t.id AND d.staged = 1
+             WHERE t.completed_at_ms IS NULL",
+            [],
+            |r| r.get(0),
+        )?;
         Ok(StoreStatus {
             staging_count,
             oldest_staged_ms,
+            stranded_task_count,
             schema_version: self.schema_version()?,
         })
     }
@@ -663,6 +861,10 @@ mod tests {
         }
     }
 
+    fn temp_db(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("dlog-store-{tag}-{}.db", Ulid::new()))
+    }
+
     #[test]
     fn migrate_is_idempotent_and_records_version() {
         let store = Store::open_in_memory().unwrap();
@@ -670,6 +872,195 @@ mod tests {
         // Re-running migration must not error or duplicate the version row.
         store.migrate().unwrap();
         assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrates_a_v1_store_up_without_touching_its_rows() {
+        // The regression guard for every future migration: a store created
+        // before the migration sequence existed (schema.sql replayed, version 1)
+        // must come up to date on open, keeping what it recorded.
+        let db = temp_db("v1");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(MIGRATIONS[0]).unwrap();
+            conn.execute(
+                "INSERT INTO schema_meta(key, value) VALUES('schema_version', '1')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO task(id, parent_task_id, instruction, created_at_ms)
+                 VALUES('01OLDTASK', NULL, 'legacy work', 1)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(&db).unwrap();
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+        // The v2 column exists and the pre-existing task is open, not lost.
+        let open = store.list_tasks(false, None).unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, "01OLDTASK");
+        assert_eq!(open[0].instruction.as_deref(), Some("legacy work"));
+        assert!(open[0].completed_at_ms.is_none());
+
+        // Re-opening applies nothing further.
+        drop(store);
+        let store = Store::open(&db).unwrap();
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+        assert_eq!(store.list_tasks(false, None).unwrap().len(), 1);
+        let _ = std::fs::remove_file(&db);
+    }
+
+    #[test]
+    fn refuses_a_store_from_a_newer_dlog() {
+        let db = temp_db("future");
+        {
+            let store = Store::open(&db).unwrap();
+            store
+                .conn
+                .execute(
+                    "UPDATE schema_meta SET value = '999' WHERE key = 'schema_version'",
+                    [],
+                )
+                .unwrap();
+        }
+        match Store::open(&db) {
+            Err(OpenError::SchemaTooNew { found, supported }) => {
+                assert_eq!(found, 999);
+                assert_eq!(supported, SCHEMA_VERSION);
+            }
+            Err(other) => panic!("expected SchemaTooNew, got {other:?}"),
+            Ok(_) => panic!("a newer store must not open"),
+        }
+        let _ = std::fs::remove_file(&db);
+    }
+
+    #[test]
+    fn a_fresh_store_applies_every_migration() {
+        // An empty file starts at version 0 and converges on the same schema an
+        // upgraded store reaches.
+        let db = temp_db("fresh");
+        let store = Store::open(&db).unwrap();
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+        const {
+            assert!(
+                SCHEMA_VERSION >= 2,
+                "the sequence has more than the baseline"
+            )
+        };
+        let task = store.insert_task(None, None).unwrap();
+        assert!(store.complete_task(&task).is_ok(), "v2 column is present");
+        let _ = std::fs::remove_file(&db);
+    }
+
+    #[test]
+    fn complete_task_keeps_the_first_completion_time() {
+        let store = Store::open_in_memory().unwrap();
+        let task = store
+            .insert_task(None, Some("investigate the flake"))
+            .unwrap();
+        assert!(
+            store.list_tasks(false, None).unwrap()[0]
+                .completed_at_ms
+                .is_none()
+        );
+
+        let first = store.complete_task(&task).unwrap();
+        // A second `task done` is a follow-up seal, not a re-completion.
+        let again = store.complete_task(&task).unwrap();
+        assert_eq!(first, again);
+
+        // Completed tasks drop out of the open list but stay in the full one.
+        assert!(store.list_tasks(false, None).unwrap().is_empty());
+        let all = store.list_tasks(true, None).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].completed_at_ms, Some(first));
+    }
+
+    #[test]
+    fn list_tasks_filters_by_state_and_parent_with_staged_counts() {
+        let store = Store::open_in_memory().unwrap();
+        let parent = store.insert_task(None, Some("ship it")).unwrap();
+        let child = store.insert_task(Some(&parent), None).unwrap();
+        let other = store.insert_task(None, None).unwrap();
+
+        store
+            .stage_decision(&NewDecision {
+                task_id: Some(child.clone()),
+                ..minimal("still in flight")
+            })
+            .unwrap();
+        let sealed = store
+            .stage_decision(&NewDecision {
+                task_id: Some(child.clone()),
+                ..minimal("already sealed")
+            })
+            .unwrap();
+        store.seal(&sealed, &Binding::None).unwrap();
+        store.complete_task(&other).unwrap();
+
+        // Open only: the completed one is gone, and rows come back newest-first.
+        let open = store.list_tasks(false, None).unwrap();
+        let ids: Vec<&str> = open.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&child.as_str()) && ids.contains(&parent.as_str()));
+        assert!(ids.windows(2).all(|w| w[0] > w[1]), "descending by id");
+
+        let row = |id: &str| open.iter().find(|t| t.id == id).unwrap().clone();
+        // Only unsealed decisions count towards staged_count.
+        assert_eq!(row(&child).staged_count, 1);
+        assert_eq!(row(&parent).staged_count, 0);
+        assert_eq!(row(&child).parent_task_id.as_deref(), Some(parent.as_str()));
+        assert_eq!(row(&parent).instruction.as_deref(), Some("ship it"));
+
+        assert_eq!(store.list_tasks(true, None).unwrap().len(), 3);
+        // --parent narrows to that task's children.
+        let kids = store.list_tasks(true, Some(&parent)).unwrap();
+        assert_eq!(kids.len(), 1);
+        assert_eq!(kids[0].id, child);
+        assert!(store.list_tasks(true, Some("01NOPE")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn stranded_tasks_are_unfinished_ones_holding_staging() {
+        let store = Store::open_in_memory().unwrap();
+        let stranded = store.insert_task(None, Some("left behind")).unwrap();
+        let finished = store.insert_task(None, None).unwrap();
+        let quiet = store.insert_task(None, None).unwrap();
+
+        store
+            .stage_decision(&NewDecision {
+                task_id: Some(stranded.clone()),
+                ..minimal("never sealed")
+            })
+            .unwrap();
+        store
+            .stage_decision(&NewDecision {
+                task_id: Some(finished.clone()),
+                ..minimal("sealed at task end")
+            })
+            .unwrap();
+        // `quiet` is open but has nothing staged; task-less staging is invisible
+        // here by construction (it belongs to no task).
+        store.stage_decision(&minimal("no task at all")).unwrap();
+
+        let ids = store.staged_decision_ids_for_task(&finished).unwrap();
+        store.seal_staged(&Binding::None, Some(&ids)).unwrap();
+        store.complete_task(&finished).unwrap();
+
+        let rows = store.stranded_tasks(20).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].task, stranded);
+        assert_eq!(rows[0].instruction.as_deref(), Some("left behind"));
+        assert_eq!(rows[0].staged_count, 1);
+        assert!(rows[0].oldest_staged_ms > 0);
+        assert_eq!(store.status().unwrap().stranded_task_count, 1);
+        assert!(!quiet.is_empty());
+
+        // The cap is honoured.
+        assert!(store.stranded_tasks(0).unwrap().is_empty());
     }
 
     #[test]
@@ -893,5 +1284,7 @@ mod tests {
         assert_eq!(status.staging_count, 1); // one sealed, one still staged
         assert!(status.oldest_staged_ms.is_some());
         assert_eq!(status.schema_version, SCHEMA_VERSION);
+        // Neither decision belongs to a task, so nothing is stranded per-task.
+        assert_eq!(status.stranded_task_count, 0);
     }
 }

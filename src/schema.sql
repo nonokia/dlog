@@ -8,6 +8,13 @@
 -- the staging/main semantics while avoiding duplicated child tables.
 --
 -- All DDL is idempotent (IF NOT EXISTS) so opening an existing store is a no-op.
+--
+-- FROZEN: this file is schema **version 1**, the baseline every store that
+-- predates the migration sequence already carries (#60). It is the starting
+-- shape of the schema, not the current one — later changes are separate files
+-- in `src/migrations/`, registered in `MIGRATIONS` in `store.rs` and applied
+-- exactly once each. Editing this file would silently diverge new stores from
+-- existing ones.
 
 CREATE TABLE IF NOT EXISTS schema_meta (
     key   TEXT PRIMARY KEY,

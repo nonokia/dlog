@@ -389,10 +389,13 @@ v0.1 / v0.2 の実装後に本設計書と実コードを突き合わせた際�
 
 - **タスクライフサイクル（`dlog task start` / `done`）**（OpenSpec change `task-lifecycle`）。§8.3 の非コード系シールトリガーを実装し、暫定解だった `dlog bind --none` を置き換えた。`bind --none` は staging 全体をシールするため、サブエージェントがこれを呼ぶと親や兄弟の作業中の判断まで「コミット無し」で確定させてしまう（本ログは append-only なので取り返しがつかない）。`task done` は当該タスクの判断だけをシールする。併せて `task start` が `insert_task` の初の呼び出し元となり、§7.1 / §4 の `parent_task_id` 階層が初めて実際に埋まるようになった。`bind --none` はタスク開始時に見つけた滞留 staging 用の避難口として残す。
 
+- **版管理されたスキーママイグレーション**（OpenSpec change `schema-migrations`）。初期実装は `schema.sql` を `CREATE TABLE IF NOT EXISTS` で毎回リプレイするだけで、SQLite に `ADD COLUMN IF NOT EXISTS` が無い以上カラム追加の経路が存在しなかった（`SCHEMA_VERSION` と `schema_meta` は記録されるだけで分岐に使われていなかった）。`MIGRATIONS` 配列（添字 + 1 = バージョン）に対し `schema_meta.schema_version` を読んで未適用分だけを単一トランザクションで適用する方式に変更。`schema.sql` は **v1 ベースライン（凍結）**で、以後の変更は `src/migrations/` に1ファイル1回適用として置く。バイナリより新しいストアを開いた場合は黙って読まず `schema_too_new` で明示的に失敗する（基盤が変わった答えを「確からしい答え」として返さないのは §10.3 の `drifted` と同じ姿勢）。append-only の本ログ（§7.2）に down マイグレーションは用意しない。
+
+- **タスク完了状態と滞留タスクの開示**（OpenSpec change `task-list`）。`task-lifecycle` の時点では「現実解」として先送りしていた完了カラム（先送りの理由の一つが ALTER 経路の不在だった）を、上記マイグレーション経路の上に `task.completed_at_ms`（schema v2）として追加した。`dlog task done` が完了時刻を刻み（2回目以降は追加分をシールするだけで最初の完了時刻を保持）、`dlog task list [--open|--all] [--parent]` が未完了タスクを圧縮形（§9.1 原則1）で返す。併せて `dlog status` に **滞留タスク**（未完了かつ staged 判断を持つタスク）を追加。§8.3 の滞留検出は `staging_count` だけでは「誰の作業か」を答えられず、タスク単位でシールする以上エージェントが行動できる粒度になっていなかった。返すのは事実のみ（id / 要約 / 件数 / 最古の staged 時刻）で、「次に何をせよ」は返さない（§9.1 原則2）。
+
 ### 現実解・未実装（設計意図は別手段で充足）
 
-- **タスクの完了状態はスキーマに持たない**。`task` テーブルに完了時刻・状態カラムは無く、シールされたという事実が観測可能な結果そのものである。「未完了タスクの一覧」が必要になった時点で `dlog task list` とセットで検討する（マイグレーション機構が `CREATE TABLE IF NOT EXISTS` の冪等リプレイのみで ALTER 経路を持たないことも理由）。
-- **`task done` は子タスクへカスケードしない**。§8.3 はシール義務を各サブエージェント自身に置いており、親が子の staging をシールすると上記の「他人の判断を確定させる」問題を一段上で再現するため。取り残された staging は `dlog status` で検出できる。
+- **`task done` は子タスクへカスケードしない**。§8.3 はシール義務を各サブエージェント自身に置いており、親が子の staging をシールすると上記の「他人の判断を確定させる」問題を一段上で再現するため。取り残された staging は `dlog status` の滞留タスク（`stranded_tasks`）で当該タスクごと検出でき、引き継ぐ側が id を指定して `task done` できる。
 
 ### 命名・表記差（機能的影響なし）
 

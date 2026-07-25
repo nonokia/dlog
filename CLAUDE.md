@@ -55,9 +55,13 @@ with `RUSTFLAGS="-D warnings"`, so keep clippy clean.
   `status`, `search`, `invariants`, `context`, `trace`), plus `compact` (shared compact result
   rows + context budget) and `mod` (shared `AppError`, `open_store`, `current_git_sha`,
   `parse_line_spec`). A command handler maps args → store/anchor calls → `emit` JSON.
-- `src/store.rs` + `src/schema.sql` — the SQLite layer (idempotent migrations). **Staging vs. main
-  log is one `decision` table with a `staged` flag, not two physical tables**; sealing flips the
-  flag and stamps the binding, and BEFORE UPDATE/DELETE triggers make sealed rows append-only.
+- `src/store.rs` + `src/schema.sql` + `src/migrations/` — the SQLite layer. Schema changes go
+  through the **versioned migration sequence** (`MIGRATIONS` in `store.rs`, index + 1 = version):
+  `schema.sql` is the frozen v1 baseline, every later change is a new file in `src/migrations/`
+  applied exactly once (so it may `ALTER`), and `schema_meta.schema_version` decides what runs. A
+  store newer than the binary is refused with `schema_too_new`. **Staging vs. main log is one
+  `decision` table with a `staged` flag, not two physical tables**; sealing flips the flag and
+  stamps the binding, and BEFORE UPDATE/DELETE triggers make sealed rows append-only.
 - `src/model.rs` — domain types (Decision/Anchor/Binding/Agent/...).
 - `src/anchor.rs` — **the only language-dependent code**: tree-sitter extraction of `symbol_path`
   and `structural_hash` at record time. A `LangSupport` table holds the per-language knowledge
@@ -142,12 +146,19 @@ blocked.
 
 Command surface: `dlog record`, `dlog why <file:line|symbol>`, `dlog show <id>`,
 `dlog context <path>`, `dlog trace <id>`, `dlog invariants`, `dlog search --text`, `dlog status`,
-`dlog bind <sha>`, `dlog commit`, `dlog hooks <install|uninstall>`. Full-text search uses SQLite FTS5.
+`dlog bind <sha>`, `dlog commit`, `dlog hooks <install|uninstall>`,
+`dlog task <start|list|done>`. Full-text search uses SQLite FTS5.
+
+- **Task lifecycle (§7.1, §8.3):** `task start` → `record --task` → `task done` (the non-code seal).
+  `task done` stamps `completed_at_ms` on first completion; `task list` returns open tasks in the
+  compact form; `status` names *stranded tasks* — unfinished tasks that still hold staged decisions
+  — so a lost task id is recoverable and staging left behind is attributable.
 
 ## Scope status
 
 **Delivered (v0.1 + v0.2):** the full command surface above; staging/main-log/binding with git
-automation (`commit` wrapper + post-commit `hooks` auto-seal); AST-node anchoring with query-time
-resolution for Rust, TypeScript/TSX, Go, and PHP; context-budgeted output; and the agent instruction template
-(`templates/AGENTS.md`). Possible later work (not yet scoped): more tree-sitter grammars, richer
-`trace`/`context` rollups, and task-lifecycle commands.
+automation (`commit` wrapper + post-commit `hooks` auto-seal); the task lifecycle
+(`task start`/`list`/`done` with stranded-task detection in `status`); versioned schema migrations;
+AST-node anchoring with query-time resolution for Rust, TypeScript/TSX, Go, and PHP;
+context-budgeted output; and the agent instruction template (`templates/AGENTS.md`). Possible later
+work (not yet scoped): more tree-sitter grammars, and richer `trace`/`context` rollups.

@@ -68,6 +68,18 @@ impl From<rusqlite::Error> for AppError {
     }
 }
 
+impl From<crate::store::OpenError> for AppError {
+    fn from(e: crate::store::OpenError) -> Self {
+        // A store from a newer dlog gets its own code: the fix is upgrading the
+        // binary, not repairing the store (#60).
+        let code = match e {
+            crate::store::OpenError::SchemaTooNew { .. } => "schema_too_new",
+            crate::store::OpenError::Sqlite(_) => "store_error",
+        };
+        AppError::new(code, e.to_string())
+    }
+}
+
 impl From<std::io::Error> for AppError {
     fn from(e: std::io::Error) -> Self {
         AppError::new("io_error", e.to_string())
