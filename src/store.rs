@@ -599,6 +599,33 @@ impl Store {
         Ok(ids)
     }
 
+    /// The `(file, decision_id)` pairs under `path`, newest-first by decision.
+    /// Same scope as [`Store::decision_ids_under_path`], but keeping the file
+    /// each anchor named so `dlog context --rollup` can group by it (#63). A
+    /// decision anchored to several files under the path appears once per file.
+    pub fn anchors_under_path(&self, path: &str) -> rusqlite::Result<Vec<(String, String)>> {
+        let (sql, params): (&str, Vec<String>) = if path == "." {
+            (
+                "SELECT DISTINCT file, decision_id FROM anchor ORDER BY decision_id DESC",
+                vec![],
+            )
+        } else {
+            (
+                "SELECT DISTINCT file, decision_id FROM anchor
+                 WHERE file = ?1 OR file LIKE ?2 ESCAPE '\\'
+                 ORDER BY decision_id DESC",
+                vec![path.to_string(), format!("{}/%", like_escape(path))],
+            )
+        };
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(params), |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// Every decision carrying an anchor, newest-first. Backs `dlog context .`
     /// (the whole workspace).
     fn all_anchored_decision_ids(&self) -> rusqlite::Result<Vec<String>> {
