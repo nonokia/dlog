@@ -14,7 +14,10 @@
 //! **by branch**: nodes are built nearest-root first, and once the budget is
 //! spent everything after it in that order is dropped — which, because a node's
 //! descendants always come later, drops whole subtrees rather than orphaning
-//! them. `elided` reports how many reachable decisions were left out.
+//! them. `elided` reports how many reachable decisions were left out. The
+//! queried decision itself is never charged: `root` comes back at full width
+//! however tight the budget, since a trace that dropped its own subject would
+//! answer nothing.
 
 use std::collections::{HashMap, HashSet};
 
