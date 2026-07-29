@@ -13,7 +13,7 @@
 //! the path ride along, because they are what must be read before touching the
 //! code (§7.1) and a second command is one the agent may not run.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use serde::Serialize;
@@ -125,12 +125,12 @@ fn build(
     } else {
         // Distinct decisions, still newest-first: a decision anchored to several
         // files under the path must not be listed once per file.
-        let mut ids: Vec<String> = Vec::new();
-        for (_, id) in &pairs {
-            if !ids.contains(id) {
-                ids.push(id.clone());
-            }
-        }
+        let mut seen = HashSet::new();
+        let ids: Vec<String> = pairs
+            .iter()
+            .filter(|(_, id)| seen.insert(id.clone()))
+            .map(|(_, id)| id.clone())
+            .collect();
         let (rows, truncated, elided) = compact::collect(
             store,
             &ids,
@@ -184,7 +184,7 @@ fn wants_rollup(args: &ContextArgs, pairs: &[(String, String)]) -> bool {
 fn collect_rollup(
     store: &Store,
     pairs: &[(String, String)],
-    superseded: &std::collections::HashSet<String>,
+    superseded: &HashSet<String>,
     args: &ContextArgs,
 ) -> rusqlite::Result<(Vec<FileRollup>, bool, usize)> {
     // `pairs` is newest-first, so the first id seen for a file is its latest and

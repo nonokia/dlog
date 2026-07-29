@@ -421,11 +421,8 @@ mod tests {
         assert_eq!(env.elided, 10 - kept.len());
 
         // Whatever survived is a connected chain from the root: no orphans.
-        let mut expected_depth = 1;
-        for (_, depth) in &kept {
-            assert_eq!(*depth, expected_depth);
-            expected_depth += 1;
-        }
+        let depths: Vec<usize> = kept.iter().map(|(_, depth)| *depth).collect();
+        assert_eq!(depths, (1..=kept.len()).collect::<Vec<_>>());
 
         // Unbounded keeps the whole chain.
         args.budget = 0;
