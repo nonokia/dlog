@@ -70,8 +70,8 @@ cargo test
 - **AST-node anchors** — decisions anchor to named definitions (not line
   numbers), so they survive refactors. Identity is judged **at query time** and
   surfaced as a `resolution` (`exact` / `drifted` / `relocated` / `file_fallback`).
-  Rust, TypeScript/TSX, Go, and PHP get node anchoring (tree-sitter); other files
-  anchor at the file level.
+  Rust, TypeScript/TSX, Go, PHP, Python, Java, and Ruby get node anchoring
+  (tree-sitter); other files anchor at the file level.
 - **Invariants** — declared constraints, queried independently of the log.
 
 ## Commands

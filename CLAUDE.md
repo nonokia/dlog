@@ -8,8 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 (`record`), the full query surface (`why` / `show` / `status` / `search` /
 `invariants` / `context` / `trace`), staging/seal/binding (`bind`) with git
 automation (`commit` wrapper + `hooks` post-commit auto-seal), AST-node anchoring
-with query-time resolution for **Rust, TypeScript, Go, and PHP**, and context-budgeted
-output. `agent-first-vcs-design.md` (written in Japanese) remains the **source of
+with query-time resolution for **Rust, TypeScript, Go, PHP, Python, Java, and Ruby**, and
+context-budgeted output. `agent-first-vcs-design.md` (written in Japanese) remains the **source of
 truth** for design decisions; do not re-litigate the settled choices listed in
 its section 11.
 
@@ -65,7 +65,8 @@ with `RUSTFLAGS="-D warnings"`, so keep clippy clean.
 - `src/model.rs` — domain types (Decision/Anchor/Binding/Agent/...).
 - `src/anchor.rs` — **the only language-dependent code**: tree-sitter extraction of `symbol_path`
   and `structural_hash` at record time. A `LangSupport` table holds the per-language knowledge
-  (Rust, TypeScript/TSX, Go, PHP); unsupported files degrade to file-level (§10.5).
+  (Rust, TypeScript/TSX, Go, PHP, Python, Java, Ruby); unsupported files degrade to file-level
+  (§10.5).
 - `src/resolve.rs` — query-time 2-axis resolution producing the `resolution` confidence.
 - `src/output.rs` — the JSON envelope / error / exit-code contract shared by all commands.
 - `templates/AGENTS.md` — instruction template shipped for agents that *use* dlog (distinct from
@@ -125,8 +126,8 @@ blocked.
   language-independent (path only — non-code files like YAML/Markdown can carry decisions too).
 - **Language-dependent (anchor resolution only):** extracting `symbol_path` and `structural_hash`
   via tree-sitter. Unsupported languages naturally degrade to `file_fallback`. **Rust,
-  TypeScript/TSX, Go, and PHP have node anchoring** (Rust first, for dogfooding); more grammars are
-  cheap to add.
+  TypeScript/TSX, Go, PHP, Python, Java, and Ruby have node anchoring** (Rust first, for
+  dogfooding); more grammars are cheap to add.
 
 ## Query API principles (§9)
 - **Two-stage retrieval:** queries default to a compact form (id + rationale summary + binding +
@@ -159,6 +160,7 @@ Command surface: `dlog record`, `dlog why <file:line|symbol>`, `dlog show <id>`,
 **Delivered (v0.1 + v0.2):** the full command surface above; staging/main-log/binding with git
 automation (`commit` wrapper + post-commit `hooks` auto-seal); the task lifecycle
 (`task start`/`list`/`done` with stranded-task detection in `status`); versioned schema migrations;
-AST-node anchoring with query-time resolution for Rust, TypeScript/TSX, Go, and PHP;
-context-budgeted output; and the agent instruction template (`templates/AGENTS.md`). Possible later
-work (not yet scoped): more tree-sitter grammars, and richer `trace`/`context` rollups.
+AST-node anchoring with query-time resolution for Rust, TypeScript/TSX, Go, PHP, Python, Java,
+and Ruby; context-budgeted output; and the agent instruction template (`templates/AGENTS.md`).
+Possible later work (not yet scoped): more tree-sitter grammars, and richer `trace`/`context`
+rollups.

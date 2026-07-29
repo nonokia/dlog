@@ -8,9 +8,9 @@
 //! `line_span`, and a `structural_hash`.
 //!
 //! The per-language knowledge lives in [`LangSupport`]; the walk and hashing are
-//! language-agnostic. Rust, TypeScript/TSX, Go, and PHP are supported (§10.6);
-//! other files have no [`language_for_path`] and degrade to file-level anchors
-//! (§10.5).
+//! language-agnostic. Rust, TypeScript/TSX, Go, PHP, Python, Java, and Ruby are
+//! supported (§10.6); other files have no [`language_for_path`] and degrade to
+//! file-level anchors (§10.5).
 //!
 //! The `structural_hash` is a stable FNV-1a hash over the node's token stream
 //! with **identifiers, comments, and whitespace normalised away**, seeded with
@@ -51,6 +51,12 @@ pub struct LangSupport {
     /// method's receiver type yields `Client::Connect`. Most languages return
     /// `None` and rely on [`LangSupport::scope_segment`] alone.
     def_prefix: fn(Node, &[u8]) -> Option<String>,
+    /// The node whose rows become the reported [`Definition::line_span`], given
+    /// the definition node. Almost always the definition itself; Python returns
+    /// the enclosing `decorated_definition` so the decorator lines count as part
+    /// of the definition. The *hash* is always taken over the definition node,
+    /// so this only widens the human snapshot (§10.2).
+    span_node: fn(Node) -> Node,
     /// Whether descending into this node makes its functions *methods*.
     opens_method_scope: fn(&str) -> bool,
     /// Whether descending into this node ends method context (e.g. a function).
@@ -70,6 +76,9 @@ pub fn language_for_path(path: &str) -> Option<&'static LangSupport> {
         "tsx" => Some(&TSX),
         "go" => Some(&GO),
         "php" | "phtml" => Some(&PHP),
+        "py" | "pyi" => Some(&PYTHON),
+        "java" => Some(&JAVA),
+        "rb" => Some(&RUBY),
         _ => None,
     }
 }
@@ -122,12 +131,13 @@ fn walk(
                 path.push(prefix);
             }
             path.push(name);
+            let span = (lang.span_node)(child);
             out.push(Definition {
                 symbol_path: path.join("::"),
                 node_kind: def_kind.to_string(),
                 line_span: (
-                    child.start_position().row as u32 + 1,
-                    child.end_position().row as u32 + 1,
+                    span.start_position().row as u32 + 1,
+                    span.end_position().row as u32 + 1,
                 ),
                 structural_hash: structural_hash(child, src, lang),
             });
@@ -162,6 +172,7 @@ pub static RUST: LangSupport = LangSupport {
     classify: rust_classify,
     scope_segment: rust_scope_segment,
     def_prefix: |_, _| None,
+    span_node: |n| n,
     opens_method_scope: |k| matches!(k, "impl_item" | "trait_item"),
     resets_method_scope: |k| matches!(k, "mod_item" | "function_item"),
     is_identifier: |k| {
@@ -210,6 +221,7 @@ pub static TYPESCRIPT: LangSupport = LangSupport {
     classify: ts_classify,
     scope_segment: ts_scope_segment,
     def_prefix: |_, _| None,
+    span_node: |n| n,
     opens_method_scope: ts_opens_method_scope,
     resets_method_scope: ts_resets_method_scope,
     is_identifier: ts_is_identifier,
@@ -221,6 +233,7 @@ pub static TSX: LangSupport = LangSupport {
     classify: ts_classify,
     scope_segment: ts_scope_segment,
     def_prefix: |_, _| None,
+    span_node: |n| n,
     opens_method_scope: ts_opens_method_scope,
     resets_method_scope: ts_resets_method_scope,
     is_identifier: ts_is_identifier,
@@ -299,6 +312,7 @@ pub static GO: LangSupport = LangSupport {
     // Go methods are top-level `method_declaration`s carrying a receiver, not
     // nested in the type, so method context is decided per-node in `go_classify`
     // rather than by descending into a scope.
+    span_node: |n| n,
     opens_method_scope: |_| false,
     resets_method_scope: |_| false,
     is_identifier: |k| {
@@ -367,6 +381,7 @@ pub static PHP: LangSupport = LangSupport {
     classify: php_classify,
     scope_segment: php_scope_segment,
     def_prefix: |_, _| None,
+    span_node: |n| n,
     opens_method_scope: |k| {
         matches!(
             k,
@@ -413,6 +428,169 @@ fn php_scope_segment(node: Node, src: &[u8]) -> Option<String> {
         | "namespace_definition" => node_name(node, src),
         _ => None,
     }
+}
+
+// ---- Python ----------------------------------------------------------------
+
+pub static PYTHON: LangSupport = LangSupport {
+    language: python_language,
+    classify: python_classify,
+    scope_segment: python_scope_segment,
+    def_prefix: |_, _| None,
+    span_node: python_span_node,
+    opens_method_scope: |k| k == "class_definition",
+    resets_method_scope: |k| k == "function_definition",
+    is_identifier: |k| k == "identifier",
+    is_comment: |k| k == "comment",
+};
+
+fn python_language() -> tree_sitter::Language {
+    tree_sitter_python::LANGUAGE.into()
+}
+
+fn python_classify(node: Node, in_method: bool) -> Option<&'static str> {
+    match node.kind() {
+        "function_definition" => Some(if in_method { "method" } else { "function" }),
+        "class_definition" => Some("class"),
+        // A `.py` file is itself the module; there is no module node to anchor.
+        _ => None,
+    }
+}
+
+fn python_scope_segment(node: Node, src: &[u8]) -> Option<String> {
+    match node.kind() {
+        "class_definition" => node_name(node, src),
+        // Inner functions nest too — unlike the other languages, they are
+        // idiomatic here (every decorator has a `wrapper`), so leaving them
+        // unqualified would collide several of them in one file.
+        "function_definition" => node_name(node, src),
+        _ => None,
+    }
+}
+
+/// Widen a decorated definition's span to include its decorators. In Python the
+/// grammar puts `@decorator` lines in a `decorated_definition` *wrapping* the
+/// `function_definition`, so the definition node alone starts below them — and
+/// `dlog why file:line` on a decorator line would then find nothing (§10.4).
+fn python_span_node(node: Node) -> Node {
+    match node.parent() {
+        Some(parent) if parent.kind() == "decorated_definition" => parent,
+        _ => node,
+    }
+}
+
+// ---- Java ------------------------------------------------------------------
+
+pub static JAVA: LangSupport = LangSupport {
+    language: java_language,
+    classify: java_classify,
+    scope_segment: java_scope_segment,
+    def_prefix: |_, _| None,
+    span_node: |n| n,
+    // Java has no free functions: a `method_declaration` is always a method, so
+    // there is no method scope to open or reset.
+    opens_method_scope: |_| false,
+    resets_method_scope: |_| false,
+    is_identifier: |k| matches!(k, "identifier" | "type_identifier"),
+    is_comment: |k| matches!(k, "line_comment" | "block_comment" | "comment"),
+};
+
+fn java_language() -> tree_sitter::Language {
+    tree_sitter_java::LANGUAGE.into()
+}
+
+fn java_classify(node: Node, _in_method: bool) -> Option<&'static str> {
+    match node.kind() {
+        // A constructor is a method whose name is the type's; anchoring it lets a
+        // decision about construction land on the constructor, not the class.
+        "method_declaration" | "constructor_declaration" | "compact_constructor_declaration" => {
+            Some("method")
+        }
+        "class_declaration" | "record_declaration" => Some("class"),
+        // `@interface Foo` is an annotation type; it anchors like an interface.
+        "interface_declaration" | "annotation_type_declaration" => Some("interface"),
+        "enum_declaration" => Some("enum"),
+        _ => None,
+    }
+}
+
+fn java_scope_segment(node: Node, src: &[u8]) -> Option<String> {
+    match node.kind() {
+        "class_declaration"
+        | "record_declaration"
+        | "interface_declaration"
+        | "annotation_type_declaration"
+        | "enum_declaration" => node_name(node, src),
+        _ => None,
+    }
+}
+
+// ---- Ruby ------------------------------------------------------------------
+
+pub static RUBY: LangSupport = LangSupport {
+    language: ruby_language,
+    classify: ruby_classify,
+    scope_segment: ruby_scope_segment,
+    def_prefix: ruby_def_prefix,
+    span_node: |n| n,
+    opens_method_scope: |k| matches!(k, "class" | "module" | "singleton_class"),
+    resets_method_scope: |k| matches!(k, "method" | "singleton_method"),
+    is_identifier: |k| {
+        matches!(
+            k,
+            "identifier"
+                | "constant"
+                | "instance_variable"
+                | "class_variable"
+                | "global_variable"
+                | "hash_key_symbol"
+        )
+    },
+    is_comment: |k| k == "comment",
+};
+
+fn ruby_language() -> tree_sitter::Language {
+    tree_sitter_ruby::LANGUAGE.into()
+}
+
+fn ruby_classify(node: Node, in_method: bool) -> Option<&'static str> {
+    match node.kind() {
+        // A top-level `def` is a private method on Object; calling it a function
+        // matches how the other languages label an unowned definition.
+        "method" => Some(if in_method { "method" } else { "function" }),
+        // `def self.create` / `def Foo.create` always belong to an owner.
+        "singleton_method" => Some("method"),
+        "class" => Some("class"),
+        "module" => Some("module"),
+        _ => None,
+    }
+}
+
+fn ruby_scope_segment(node: Node, src: &[u8]) -> Option<String> {
+    match node.kind() {
+        // `class Foo::Bar` yields a `scope_resolution` name whose text is already
+        // `Foo::Bar` — the same separator the symbol path uses.
+        "class" | "module" => node_name(node, src),
+        // `class << self` — the receiver becomes a path segment, so its methods
+        // read `Client::self::create`, matching `def self.create` below.
+        "singleton_class" => node
+            .child_by_field_name("value")
+            .and_then(|v| v.utf8_text(src).ok())
+            .map(str::to_string),
+        _ => None,
+    }
+}
+
+/// A singleton method's receiver, e.g. `create` in `def self.create` under
+/// `class Client` becomes `Client::self::create`. Keeping `self` in the path is
+/// what separates a class method from a same-named instance method.
+fn ruby_def_prefix(node: Node, src: &[u8]) -> Option<String> {
+    if node.kind() != "singleton_method" {
+        return None;
+    }
+    node.child_by_field_name("object")
+        .and_then(|o| o.utf8_text(src).ok())
+        .map(str::to_string)
 }
 
 // ---- Structural hash (language-agnostic) ----------------------------------
@@ -495,6 +673,10 @@ mod tests {
         assert!(language_for_path("src/a.tsx").is_some());
         assert!(language_for_path("src/a.go").is_some());
         assert!(language_for_path("src/a.php").is_some());
+        assert!(language_for_path("src/a.py").is_some());
+        assert!(language_for_path("src/a.pyi").is_some());
+        assert!(language_for_path("src/A.java").is_some());
+        assert!(language_for_path("src/a.rb").is_some());
         assert!(language_for_path("README.md").is_none());
         assert!(language_for_path("Makefile").is_none());
         // A dot in a directory must not be mistaken for an extension.
@@ -686,6 +868,209 @@ namespace App {
         assert_ne!(
             h("<?php function f(int $a) {}"),
             h("<?php function f(int $a, int $b) {}")
+        );
+    }
+
+    #[test]
+    fn extracts_python_definitions() {
+        let source = r#"
+class Client:
+    def connect(self, n):
+        return n > 0
+
+    @staticmethod
+    def build(url):
+        return Client()
+
+class Nested:
+    class Inner:
+        def deep(self):
+            pass
+
+def helper(a, b):
+    def local():
+        pass
+    return a + b
+"#;
+        let defs = extract_definitions(source, &PYTHON);
+        let by_path: Vec<(&str, &str)> = defs
+            .iter()
+            .map(|d| (d.symbol_path.as_str(), d.node_kind.as_str()))
+            .collect();
+
+        assert!(by_path.contains(&("Client", "class")));
+        assert!(by_path.contains(&("Client::connect", "method")));
+        assert!(by_path.contains(&("Client::build", "method")));
+        assert!(by_path.contains(&("Nested::Inner", "class")));
+        assert!(by_path.contains(&("Nested::Inner::deep", "method")));
+        assert!(by_path.contains(&("helper", "function")));
+        // A nested `def` inside a function is a function, not a method.
+        assert!(by_path.contains(&("helper::local", "function")));
+    }
+
+    #[test]
+    fn python_decorator_lines_belong_to_the_definition() {
+        // The `@decorator` line is above `def`, and pointing at it must still
+        // resolve to the decorated function (span widened past the def node).
+        let source = "@app.route(\"/\")\n@cached\ndef index():\n    return 1\n";
+        for line in 1..=4 {
+            let def = definition_at_line(source, line, &PYTHON)
+                .unwrap_or_else(|| panic!("line {line} should be inside index"));
+            assert_eq!(def.symbol_path, "index");
+        }
+        let def = definition_at_line(source, 1, &PYTHON).unwrap();
+        assert_eq!(def.line_span, (1, 4));
+    }
+
+    #[test]
+    fn python_definition_at_line_and_hash_invariance() {
+        let source = "class C:\n    def m(self, a):\n        x = 1\n        return x\n";
+        let def = definition_at_line(source, 3, &PYTHON).expect("line 3 inside C::m");
+        assert_eq!(def.symbol_path, "C::m");
+        assert_eq!(def.node_kind, "method");
+
+        // Identifier renames don't change the Python hash; an arity change does.
+        let h = |s: &str| {
+            extract_definitions(s, &PYTHON)
+                .into_iter()
+                .next()
+                .unwrap()
+                .structural_hash
+        };
+        assert_eq!(
+            h("def f(a):\n    return a\n"),
+            h("def renamed(b):\n    return b\n")
+        );
+        assert_ne!(h("def f(a):\n    pass\n"), h("def f(a, b):\n    pass\n"));
+        // Comments and reflowed whitespace stay invariant.
+        assert_eq!(
+            h("def f(a):\n    return a + 1\n"),
+            h("def f(a):\n    # add one\n    return a  +  1\n")
+        );
+    }
+
+    #[test]
+    fn extracts_java_definitions() {
+        let source = r#"
+package net;
+
+public class Client implements Transport {
+    Client(String url) { this.url = url; }
+    public boolean connect(int n) { return n > 0; }
+}
+
+interface Transport { void send(String x); }
+
+enum Mode { FAST, SLOW }
+
+record Point(int x, int y) {}
+"#;
+        let defs = extract_definitions(source, &JAVA);
+        let by_path: Vec<(&str, &str)> = defs
+            .iter()
+            .map(|d| (d.symbol_path.as_str(), d.node_kind.as_str()))
+            .collect();
+
+        assert!(by_path.contains(&("Client", "class")));
+        assert!(
+            by_path.contains(&("Client::Client", "method")),
+            "constructor"
+        );
+        assert!(by_path.contains(&("Client::connect", "method")));
+        assert!(by_path.contains(&("Transport", "interface")));
+        assert!(by_path.contains(&("Transport::send", "method")));
+        assert!(by_path.contains(&("Mode", "enum")));
+        assert!(by_path.contains(&("Point", "class")));
+    }
+
+    #[test]
+    fn java_definition_at_line_and_hash_invariance() {
+        let source = "class C {\n  void m(int a) {\n    int x = a;\n  }\n}\n";
+        let def = definition_at_line(source, 3, &JAVA).expect("line 3 inside C::m");
+        assert_eq!(def.symbol_path, "C::m");
+        assert_eq!(def.node_kind, "method");
+
+        // Identifier renames don't change the Java hash; an arity change does.
+        let h = |s: &str| {
+            extract_definitions(s, &JAVA)
+                .into_iter()
+                .find(|d| d.node_kind == "method")
+                .unwrap()
+                .structural_hash
+        };
+        assert_eq!(
+            h("class C { int f(int a) { return a; } }"),
+            h("class D { int renamed(int b) { return b; } }")
+        );
+        assert_ne!(
+            h("class C { void f(int a) {} }"),
+            h("class C { void f(int a, int b) {} }")
+        );
+    }
+
+    #[test]
+    fn extracts_ruby_definitions() {
+        let source = r#"
+module Net
+  class Client
+    def connect(n)
+      n > 0
+    end
+
+    def self.build(url)
+      new(url)
+    end
+
+    class << self
+      def registry
+        @registry
+      end
+    end
+  end
+end
+
+def helper(a, b)
+  a + b
+end
+"#;
+        let defs = extract_definitions(source, &RUBY);
+        let by_path: Vec<(&str, &str)> = defs
+            .iter()
+            .map(|d| (d.symbol_path.as_str(), d.node_kind.as_str()))
+            .collect();
+
+        assert!(by_path.contains(&("Net", "module")));
+        assert!(by_path.contains(&("Net::Client", "class")));
+        assert!(by_path.contains(&("Net::Client::connect", "method")));
+        // `self` stays in the path so a class method can't collide with a
+        // same-named instance method.
+        assert!(by_path.contains(&("Net::Client::self::build", "method")));
+        assert!(by_path.contains(&("Net::Client::self::registry", "method")));
+        // A top-level `def` has no owner.
+        assert!(by_path.contains(&("helper", "function")));
+    }
+
+    #[test]
+    fn ruby_definition_at_line_and_hash_invariance() {
+        let source = "class C\n  def m(a)\n    x = a\n    x\n  end\nend\n";
+        let def = definition_at_line(source, 3, &RUBY).expect("line 3 inside C::m");
+        assert_eq!(def.symbol_path, "C::m");
+        assert_eq!(def.node_kind, "method");
+
+        // Identifier renames don't change the Ruby hash; an arity change does.
+        let h = |s: &str| {
+            extract_definitions(s, &RUBY)
+                .into_iter()
+                .find(|d| d.node_kind != "class")
+                .unwrap()
+                .structural_hash
+        };
+        assert_eq!(h("def f(a)\n  a\nend\n"), h("def renamed(b)\n  b\nend\n"));
+        assert_ne!(h("def f(a)\nend\n"), h("def f(a, b)\nend\n"));
+        // Instance-variable renames are identifier renames too.
+        assert_eq!(
+            h("def f(a)\n  @url = a\nend\n"),
+            h("def f(a)\n  @host = a\nend\n")
         );
     }
 
