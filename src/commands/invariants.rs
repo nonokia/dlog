@@ -51,7 +51,11 @@ pub fn run(args: InvariantsArgs) -> Result<(), AppError> {
 /// scopeless invariant is global; otherwise the two are related when one path
 /// contains the other (ancestor invariants in effect at the path, or invariants
 /// living under the queried subtree).
-fn scope_matches(invariant_scope: &Option<String>, query: &str) -> bool {
+///
+/// Shared with `dlog context`, which carries the invariants in effect at its
+/// path (#63) — one rule, so the two commands can't disagree about what is in
+/// effect where.
+pub(crate) fn scope_matches(invariant_scope: &Option<String>, query: &str) -> bool {
     match invariant_scope {
         None => true,
         Some(scope) => {

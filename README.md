@@ -86,8 +86,8 @@ dlog bind     <SHA> | --none [--decision <id>...]             # seal staged deci
 dlog commit   [-- <git commit args>]                          # git commit, then auto-seal staging
 dlog hooks    <install | uninstall>                           # repo post-commit auto-seal hook
 dlog why      <FILE:LINE | SYMBOL> [--budget <chars>]         # decisions behind a location
-dlog context  <PATH>                                          # decision summary for a file/dir
-dlog trace    <id> [--depth <n>]                              # walk the caused_by DAG (causes/effects)
+dlog context  <PATH> [--rollup | --flat] [--no-invariants]    # decision summary for a file/dir
+dlog trace    <id> [--depth <n>] [--budget <chars>]           # walk the caused_by DAG (causes/effects)
 dlog show     <id>...                                         # full record(s)
 dlog search   --text <query>                                  # full-text search (FTS5)
 dlog invariants [--scope <path>]                              # live declared constraints
@@ -98,8 +98,10 @@ Every command prints one JSON document; failures are `{"error":{...}}` (exit 1),
 usage errors exit 2. Agent identity comes from `--agent-role`/`--agent-model`
 (or `DLOG_AGENT_ROLE`/`DLOG_AGENT_MODEL`); the store path from `--db` or
 `DLOG_DB` (default `<workspace root>/.dlog/dlog.db`). The list queries
-(`why`/`context`/`search`) bound their output to a `--budget` of characters and
-report `elided` when results are left out.
+(`why`/`context`/`search`/`trace`) bound their output to a `--budget` of
+characters and report `elided` when results are left out. `dlog context` on a
+directory rolls up per file (count + latest decision) and carries the invariants
+in effect there, so it is the one command to run before touching an area.
 
 ### Workspace
 

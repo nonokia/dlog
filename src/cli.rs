@@ -256,11 +256,29 @@ pub struct WhyArgs {
 
 /// Arguments for `dlog context` (design §3, §9; v0.2, #30) — the compact
 /// decision summary for a file, or for everything under a directory.
+///
+/// A directory rolls up per file by default (#63): one row per file with its
+/// live decision count and its latest decision, so a large tree says *where* the
+/// decisions are instead of spending the budget on whatever is newest. `--flat`
+/// asks for the full stream; a path naming a single file is flat either way.
 #[derive(Debug, Args)]
 pub struct ContextArgs {
     /// File or directory to summarize decisions for.
     #[arg(value_name = "PATH")]
     pub path: String,
+
+    /// One row per file (count + latest decision). Default for directories.
+    #[arg(long, conflicts_with = "flat")]
+    pub rollup: bool,
+
+    /// Every decision as its own row, not grouped by file.
+    #[arg(long)]
+    pub flat: bool,
+
+    /// Omit the invariants in effect at this path (they are included by
+    /// default: they constrain whoever touches the code next, §7.1).
+    #[arg(long = "no-invariants")]
+    pub no_invariants: bool,
 
     /// Include superseded decisions (default: live decisions only, §9.1).
     #[arg(long = "include-superseded")]
@@ -280,7 +298,8 @@ pub struct ContextArgs {
 }
 
 /// Arguments for `dlog trace` (design §4, §9; v0.2, #31) — walk the causal DAG
-/// (`caused_by`) up (causes) and down (effects) from a decision.
+/// (`caused_by`) up (causes) and down (effects) from a decision. Each reached
+/// decision carries its own `edges`, so branch points stay readable (#63).
 #[derive(Debug, Args)]
 pub struct TraceArgs {
     /// Decision id to trace from.
@@ -290,6 +309,12 @@ pub struct TraceArgs {
     /// How many DAG levels to walk in each direction.
     #[arg(long, default_value_t = 10)]
     pub depth: usize,
+
+    /// Approx character budget for the walk (0 = unbounded, #33). Nodes are
+    /// emitted nearest-root first; once the budget is spent the remaining
+    /// branches are dropped whole and counted in `elided`.
+    #[arg(long, default_value_t = 4096)]
+    pub budget: usize,
 
     /// Store path. Defaults to $DLOG_DB, else `.dlog/dlog.db`.
     #[arg(long = "db", env = "DLOG_DB")]
@@ -467,6 +492,7 @@ mod tests {
             Command::Trace(args) => {
                 assert_eq!(args.id, "dec_1");
                 assert_eq!(args.depth, 10);
+                assert_eq!(args.budget, 4096);
             }
             _ => panic!("expected trace"),
         }
@@ -477,8 +503,37 @@ mod tests {
         assert!(Cli::try_parse_from(["dlog", "context"]).is_err());
         let cli = Cli::try_parse_from(["dlog", "context", "src/auth"]).expect("context parses");
         match cli.command {
-            Command::Context(args) => assert_eq!(args.path, "src/auth"),
+            Command::Context(args) => {
+                assert_eq!(args.path, "src/auth");
+                // Neither flag set: the command decides the shape (#63).
+                assert!(!args.rollup && !args.flat);
+                assert!(!args.no_invariants);
+            }
             _ => panic!("expected context"),
+        }
+    }
+
+    #[test]
+    fn context_rollup_and_flat_are_mutually_exclusive() {
+        assert!(Cli::try_parse_from(["dlog", "context", "src", "--rollup", "--flat"]).is_err());
+        let cli = Cli::try_parse_from(["dlog", "context", "src", "--rollup", "--no-invariants"])
+            .expect("rollup parses");
+        match cli.command {
+            Command::Context(args) => {
+                assert!(args.rollup);
+                assert!(args.no_invariants);
+            }
+            _ => panic!("expected context"),
+        }
+    }
+
+    #[test]
+    fn trace_takes_a_budget() {
+        let cli = Cli::try_parse_from(["dlog", "trace", "dec_1", "--budget", "0"])
+            .expect("trace --budget parses");
+        match cli.command {
+            Command::Trace(args) => assert_eq!(args.budget, 0),
+            _ => panic!("expected trace"),
         }
     }
 

@@ -224,15 +224,44 @@ dlog task list                        # open tasks: id, instruction, staged coun
 dlog task list --all --parent <id>    # include finished ones / only one task's children
 ```
 
+`dlog context <dir>` answers **per file** — where the decisions are, not every
+decision — and carries the invariants in effect at that path, so it is the one
+command to run before touching an area:
+
+```jsonc
+{
+  "query": { "type": "context", "path": "src/auth", "mode": "rollup" },
+  "results": [
+    { "file": "src/auth/login.rs", "count": 22,
+      "latest": { "id": "01J...", "rationale_summary": "retry 3x...", /* ... */ } }
+  ],
+  "invariants": [
+    { "id": "01J...", "statement": "tokens never persist to disk",
+      "scope": "src/auth", "declared_by": "01J..." }
+  ],
+  "truncated": false, "elided": 0
+}
+```
+
+Drill into a file with `dlog context <file>`, or ask for every decision with
+`--flat`; `--no-invariants` drops the invariants. A path naming a single file is
+flat already (`"mode": "flat"`).
+
+`dlog trace` keeps the DAG's shape: each node carries its own `edges`, so a
+decision that caused three others is one node with three edges — the branch
+points stay readable.
+
 Superseded decisions are hidden by default; add `--include-superseded` to
 `why`/`search` for history. Staging is included by default and flagged
 `"staged": true`.
 
-Results are bounded to a context budget: `why`/`context`/`search` take
+Results are bounded to a context budget: `why`/`context`/`search`/`trace` take
 `--budget <CHARS>` (default 4096; `0` = unbounded). When results don't all fit,
 they are emitted newest-first with shorter summaries and the envelope reports
 `"elided": N` (how many live results were left out) alongside `"truncated"`.
-Widen the budget, or `dlog show <id>` for the full record.
+`trace` spends its budget nearest-root first and drops whole branches, so what
+comes back is always a connected piece of the DAG. Widen the budget, or
+`dlog show <id>` for the full record.
 
 ## Harness integration (optional)
 

@@ -141,9 +141,16 @@ blocked.
   decision is the most valuable), flagged with `staged: true`. The main-log/staging UNION is hidden
   from the agent as a single list.
 
-- **Context budget (§2.1, #33):** list queries (`why` / `context` / `search`) bound their payload
-  to an agent context window via `--budget` (chars; default on), emitting newest-first with adaptive
-  summary widths and reporting `elided` (live results left out) alongside `truncated`.
+- **Context budget (§2.1, #33, #63):** the list queries (`why` / `context` / `search` / `trace`)
+  bound their payload to an agent context window via `--budget` (chars; default on), emitting
+  newest-first with adaptive summary widths and reporting `elided` (live results left out)
+  alongside `truncated`. `trace` spends its budget nearest-root first so a cut drops whole
+  branches, never orphans.
+
+- **Rollups (§3, §4, #63):** `context <dir>` answers **per file** (count + latest decision) and
+  carries the invariants in effect at that path — one command before touching an area; `--flat`
+  asks for every decision, and a path naming a single file is flat already. `trace` output keeps
+  the DAG's shape: each node carries its own `edges`, so branch points stay readable.
 
 Command surface: `dlog record`, `dlog why <file:line|symbol>`, `dlog show <id>`,
 `dlog context <path>`, `dlog trace <id>`, `dlog invariants`, `dlog search --text`, `dlog status`,
@@ -162,5 +169,4 @@ automation (`commit` wrapper + post-commit `hooks` auto-seal); the task lifecycl
 (`task start`/`list`/`done` with stranded-task detection in `status`); versioned schema migrations;
 AST-node anchoring with query-time resolution for Rust, TypeScript/TSX, Go, PHP, Python, Java,
 and Ruby; context-budgeted output; and the agent instruction template (`templates/AGENTS.md`).
-Possible later work (not yet scoped): more tree-sitter grammars, and richer `trace`/`context`
-rollups.
+Possible later work (not yet scoped): more tree-sitter grammars.

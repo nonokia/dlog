@@ -91,7 +91,7 @@ pub(crate) fn collect(
 /// The rationale summary width to use for `count` candidates under `budget`
 /// chars: roughly the per-row share minus fixed overhead, clamped to
 /// `[SUMMARY_FLOOR, SUMMARY_MAX]`. `budget == 0` means no budget (full width).
-fn adaptive_width(budget: usize, count: usize) -> usize {
+pub(crate) fn adaptive_width(budget: usize, count: usize) -> usize {
     if budget == 0 {
         return SUMMARY_MAX;
     }
@@ -101,17 +101,30 @@ fn adaptive_width(budget: usize, count: usize) -> usize {
         .clamp(SUMMARY_FLOOR, SUMMARY_MAX)
 }
 
-/// Build a single compact row from an already-fetched decision (used by `trace`,
-/// which walks the DAG node by node rather than from an id list). Full width.
+/// Build a single compact row from an already-fetched decision (used by the
+/// callers that walk node by node rather than from an id list: `trace`'s DAG and
+/// `context --rollup`'s per-file latest). Full width.
 pub(crate) fn row_from(decision: StoredDecision, superseded: bool) -> CompactRow {
+    row_from_at(decision, superseded, SUMMARY_MAX)
+}
+
+/// [`row_from`] at an explicit summary width, for callers doing their own
+/// budgeting (§9.1, #33).
+pub(crate) fn row_from_at(decision: StoredDecision, superseded: bool, width: usize) -> CompactRow {
     CompactRow {
-        rationale_summary: summarize(&decision.rationale, SUMMARY_MAX),
+        rationale_summary: summarize(&decision.rationale, width),
         id: decision.id,
         binding: decision.binding,
         staged: decision.staged,
         superseded,
         ts: decision.created_at_ms,
     }
+}
+
+/// What a row is worth against a character budget: its summary plus the
+/// approximate fixed JSON cost of the rest of the row.
+pub(crate) fn row_cost(row: &CompactRow) -> usize {
+    row.rationale_summary.chars().count() + ROW_OVERHEAD
 }
 
 /// Compact the rationale to its first line, capped at `width` chars, for the
