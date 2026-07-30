@@ -46,6 +46,10 @@ pub enum Command {
     Context(ContextArgs),
     /// Walk the causal DAG (caused_by) around a decision (#31).
     Trace(TraceArgs),
+    /// Write sealed decisions out as JSONL, for another checkout (#64).
+    Export(ExportArgs),
+    /// Replay an export file into this store (#64).
+    Import(ImportArgs),
 }
 
 impl Command {
@@ -65,6 +69,8 @@ impl Command {
             Command::Hooks(_) => "hooks",
             Command::Context(_) => "context",
             Command::Trace(_) => "trace",
+            Command::Export(_) => "export",
+            Command::Import(_) => "import",
         }
     }
 }
@@ -186,6 +192,11 @@ pub struct RecordArgs {
     /// Agent session id (optional).
     #[arg(long = "agent-session", env = "DLOG_AGENT_SESSION")]
     pub agent_session: Option<String>,
+
+    /// The human behind the agent, e.g. an email or handle (optional). Only ever
+    /// what is passed here — never read from git config (#58, #64).
+    #[arg(long = "author", env = "DLOG_AUTHOR")]
+    pub author: Option<String>,
 
     /// Conversation id (Agent Trace compatible).
     #[arg(long = "conversation-id")]
@@ -458,6 +469,44 @@ pub struct CommitArgs {
         value_name = "GIT_ARGS"
     )]
     pub git_args: Vec<String>,
+}
+
+/// Arguments for `dlog export` (#64) — write sealed decisions out as JSONL so
+/// another checkout can replay them.
+///
+/// The JSONL goes to `--out` rather than stdout: §9.3 gives every invocation
+/// exactly one JSON document on stdout, and here that is the summary of what was
+/// written. Staged decisions are never exported and there is no flag for it
+/// (§8.2).
+#[derive(Debug, Args)]
+pub struct ExportArgs {
+    /// File to write the JSONL to.
+    #[arg(long = "out", value_name = "PATH")]
+    pub out: std::path::PathBuf,
+
+    /// Only decisions from this point on: a decision id (ULID) or a UTC
+    /// `YYYY-MM-DD` date. Whatever the cut needs to stay importable — superseded
+    /// decisions, parent tasks, declared invariants — is carried along.
+    #[arg(long = "since", value_name = "ULID | YYYY-MM-DD")]
+    pub since: Option<String>,
+
+    /// Store path. Defaults to $DLOG_DB, else `.dlog/dlog.db`.
+    #[arg(long = "db", env = "DLOG_DB")]
+    pub db: Option<String>,
+}
+
+/// Arguments for `dlog import` (#64) — replay an export file into this store.
+/// Ids the store already has are skipped, so re-importing an overlapping file is
+/// a no-op rather than an error.
+#[derive(Debug, Args)]
+pub struct ImportArgs {
+    /// Export file to read, or `-` for stdin.
+    #[arg(value_name = "PATH")]
+    pub path: String,
+
+    /// Store path. Defaults to $DLOG_DB, else `.dlog/dlog.db`.
+    #[arg(long = "db", env = "DLOG_DB")]
+    pub db: Option<String>,
 }
 
 #[cfg(test)]

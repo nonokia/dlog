@@ -75,6 +75,7 @@ pub fn run(args: RecordArgs) -> Result<(), AppError> {
             role: args.agent_role,
             model: args.agent_model,
             session_id: args.agent_session,
+            author: args.author,
         },
         conversation_id: args.conversation_id,
         rationale,
@@ -374,6 +375,7 @@ mod tests {
             agent_role: "implementer".into(),
             agent_model: "claude-test".into(),
             agent_session: None,
+            author: None,
             conversation_id: None,
             task_id: None,
             instruction: None,
@@ -407,6 +409,46 @@ mod tests {
         assert_eq!(invariants[0].1, "tokens never logged");
 
         let _ = std::fs::remove_file(&db);
+    }
+
+    #[test]
+    fn record_carries_an_author_only_when_one_is_given() {
+        // Optional by design (§7.3): a solo store never sees the field, a shared
+        // one can say whose agent made the call (#64).
+        let db = temp_db();
+        run(args_with_db(&db)).expect("record without --author should succeed");
+        let store = Store::open(&db).unwrap();
+        let id = &store.search("backoff").unwrap()[0];
+        assert!(
+            store
+                .get_decision(id)
+                .unwrap()
+                .unwrap()
+                .agent
+                .author
+                .is_none()
+        );
+        drop(store);
+
+        let db2 = temp_db();
+        let mut args = args_with_db(&db2);
+        args.author = Some("lee@example.com".into());
+        run(args).expect("record with --author should succeed");
+        let store = Store::open(&db2).unwrap();
+        let id = &store.search("backoff").unwrap()[0];
+        assert_eq!(
+            store
+                .get_decision(id)
+                .unwrap()
+                .unwrap()
+                .agent
+                .author
+                .as_deref(),
+            Some("lee@example.com")
+        );
+
+        let _ = std::fs::remove_file(&db);
+        let _ = std::fs::remove_file(&db2);
     }
 
     #[test]

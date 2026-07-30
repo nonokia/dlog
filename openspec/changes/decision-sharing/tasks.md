@@ -1,6 +1,6 @@
 # Tasks: `dlog export` / `dlog import`, and `record --author`
 
-- [ ] **Task 1 — Schema v3: `decision.agent_author`**
+- [x] **Task 1 — Schema v3: `decision.agent_author`**
 
   Add `src/migrations/003_decision_author.sql` with the single
   `ALTER TABLE decision ADD COLUMN agent_author TEXT;` and register it in
@@ -12,7 +12,7 @@
   existing upgrade test still passes with the column present afterwards; a store
   stamped at version 4 still fails with `schema_too_new`.
 
-- [ ] **Task 2 — `Agent.author` and `record --author`**
+- [x] **Task 2 — `Agent.author` and `record --author`**
 
   Add `author: Option<String>` to `Agent` in `src/model.rs`
   (`skip_serializing_if = "Option::is_none"`). Persist and read it in
@@ -28,7 +28,7 @@
   `agent`; compact rows (`why` / `context` / `search`) are byte-identical to
   before either way.
 
-- [ ] **Task 3 — Store reads for export**
+- [x] **Task 3 — Store reads for export**
 
   In `src/store.rs` add: `sealed_decision_ids(since: Option<&SinceBound>)`
   returning ids ascending; `get_task(id)` returning a full `TaskRow`-shaped row
@@ -43,23 +43,26 @@
   for an unknown id; the invariant fetch returns retired rows too (export carries
   them; `dlog invariants` still filters).
 
-- [ ] **Task 4 — The JSONL record types**
+- [x] **Task 4 — The JSONL record types**
 
-  New `src/commands/share.rs` (shared by both commands): the `Header` /
-  `TaskRecord` / `DecisionRecord` / `InvariantRecord` types with
-  `#[serde(tag = "type", rename_all = "snake_case")]`, `FORMAT_VERSION: u32 = 1`,
-  and the `--since` bound parser (ULID or `YYYY-MM-DD` → epoch ms, UTC). Add
-  `Deserialize` to `StoredDecision` in `src/model.rs` with `#[serde(default)]` on
-  every field that is skipped when empty.
+  New `src/commands/share.rs` (shared by both commands): a `Record` enum with
+  `#[serde(tag = "type", rename_all = "snake_case")]` over `Header` /
+  `TaskRecord` / `StoredDecision` / `InvariantRecord`, `FORMAT_VERSION: u32 = 1`,
+  and the `--since` bound parser (ULID or `YYYY-MM-DD` → epoch ms, UTC — written
+  out rather than adding a date crate for one conversion). Add `Deserialize` to
+  `StoredDecision` in `src/model.rs` with `#[serde(default)]` on every field that
+  is skipped when empty. `TaskRecord` / `InvariantRecord` are the storage shapes
+  and live in `src/store.rs` beside the query shapes they differ from.
 
-  Touch: `src/commands/share.rs`, `src/commands/mod.rs`, `src/model.rs`.
+  Touch: `src/commands/share.rs`, `src/commands/mod.rs`, `src/model.rs`,
+  `src/store.rs`.
 
   Verify: unit tests — a `StoredDecision` with empty `rejected`/`caused_by`/
   `anchors` and no `supersedes` round-trips through serialize→deserialize
   unchanged; each record type serializes with its `type` tag; the `--since`
   parser accepts a ULID and `2026-07-01` and rejects `july` and `2026-13-01`.
 
-- [ ] **Task 5 — `dlog export`**
+- [x] **Task 5 — `dlog export`**
 
   `ExportArgs { out: PathBuf, since: Option<String>, db }` in `src/cli.rs`, a
   `Command::Export` arm in `src/lib.rs`, and `src/commands/export.rs`: select
@@ -76,17 +79,17 @@
   a parent task. Plus `cargo run -- export --out /tmp/x.jsonl` on this repo's own
   store producing a well-formed file.
 
-- [ ] **Task 6 — `dlog import`**
+- [x] **Task 6 — `dlog import`**
 
   `ImportArgs { path: String, db }` (`-` = stdin) in `src/cli.rs`, a
   `Command::Import` arm in `src/lib.rs`, and `src/commands/import.rs`: parse the
   whole file, validate (known `format`; no staged/binding-less decision; no
   dangling `supersedes` / `task_id` / `parent_task_id` / `declared_by` against
-  file ∪ store), then apply in one transaction. Add id-preserving inserts to
-  `src/store.rs` (`import_task` / `import_decision` / `import_invariant`) that
-  do an explicit existence check and a plain `INSERT` — **not**
-  `INSERT OR IGNORE` — so CHECK/FK violations surface. New error codes:
-  `invalid_export`, `unsupported_format`, `dangling_reference`.
+  file ∪ store), then apply in one transaction. Add `Store::import_all` to
+  `src/store.rs` — one call so the transaction stays inside the store layer, as
+  `seal_staged` does — doing an explicit existence check per row and then a plain
+  `INSERT`, **not** `INSERT OR IGNORE`, so CHECK/FK violations surface. New error
+  codes: `invalid_export`, `unsupported_format`, `dangling_reference`.
 
   Touch: `src/cli.rs`, `src/lib.rs`, `src/commands/import.rs`, `src/store.rs`.
 
@@ -104,7 +107,7 @@
   B has no working tree for it); re-importing reports all skipped; a decision
   left staged in A never appears in `out.jsonl`.
 
-- [ ] **Task 7 — Documentation**
+- [x] **Task 7 — Documentation**
 
   README: add `export` / `import` to the command list, an "Sharing a log"
   subsection under Concepts (sealed-only, ULID identity, no merge), and an
@@ -118,7 +121,7 @@
   Verify: the README command list matches `dlog --help`; every command shown in
   `templates/AGENTS.md` runs as written against a scratch store.
 
-- [ ] **Task 8 — Design record**
+- [x] **Task 8 — Design record**
 
   Append the change to §13 of `agent-first-vcs-design.md` (implementation notes),
   covering: the sharing unit fixed to sealed-only, why import needs no merge,

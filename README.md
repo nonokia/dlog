@@ -73,6 +73,9 @@ cargo test
   Rust, TypeScript/TSX, Go, PHP, Python, Java, and Ruby get node anchoring
   (tree-sitter); other files anchor at the file level.
 - **Invariants** — declared constraints, queried independently of the log.
+- **Sharing** — `dlog export` / `dlog import` move **sealed** decisions between
+  checkouts as JSONL. Ids are ULIDs and sealed rows never change, so importing is
+  inserting the ids you don't have — no merge, no sync engine, no server.
 
 ## Commands
 
@@ -92,6 +95,8 @@ dlog show     <id>...                                         # full record(s)
 dlog search   --text <query>                                  # full-text search (FTS5)
 dlog invariants [--scope <path>]                              # live declared constraints
 dlog status                                                   # store state (staging, stranded tasks, schema)
+dlog export   --out <PATH> [--since <ULID | YYYY-MM-DD>]      # write sealed decisions as JSONL
+dlog import   <PATH | ->                                      # replay an export file into this store
 ```
 
 Every command prints one JSON document; failures are `{"error":{...}}` (exit 1),
@@ -113,6 +118,33 @@ records and resolves to the same file whichever subdirectory you run from.
 
 Git is optional. Only `dlog commit` and `dlog hooks` need it — run `dlog init` to
 declare a root without one, record as usual, and seal with `dlog task done`.
+
+### Sharing a log with your team
+
+```bash
+dlog export --out decisions.jsonl                 # everything sealed
+dlog export --out decisions.jsonl --since 2026-07-01
+dlog import decisions.jsonl                       # on the other checkout
+```
+
+Only **sealed** decisions are shared. Staging is one agent's live work area, and
+a decision that arrived from elsewhere was never yours to seal — so `export`
+never writes a staged row and `import` refuses a file containing one.
+
+Importing is idempotent: ids the store already has are skipped and counted as
+`skipped_existing`, so re-importing an overlapping file is a no-op. `--since`
+carries along whatever the cut needs to stay importable (superseded decisions,
+parent tasks, declared invariants), and `cat a.jsonl b.jsonl | dlog import -`
+works.
+
+How the file travels is up to you — commit it to the repo, drop it in object
+storage, publish it as a CI artifact. dlog has no transport and no server, and
+nothing leaves your machine unless you run `export`.
+
+> **Don't share the store file itself.** `.dlog/` belongs on local disk. SQLite's
+> locking is not reliable on NFS, SMB, or file-sync clients (Dropbox, Drive), and
+> the failure mode there is a corrupted store rather than an error message. Use
+> `export` / `import`.
 
 ### Example
 

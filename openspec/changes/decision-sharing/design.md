@@ -33,13 +33,22 @@ Everything below follows from three facts about the existing schema:
 So `import` is: for each record, skip if the id is present, otherwise insert.
 That is the algorithm in full.
 
-### Ordering falls out of the ids
+### Ordering follows the ids — but is not load-bearing
 
 A referenced row always existed before the row referencing it, and ULIDs are
-time-sortable — so a referent's id always sorts before its referrer's. Writing
-**tasks ascending, then decisions ascending, then invariants ascending** therefore
-satisfies all three FKs with no topological sort, on both the export and import
-side. (Invariants come last because `declared_by` points at a decision.)
+time-sortable, so a referent's id sorts before its referrer's. Writing **tasks
+ascending, then decisions ascending, then invariants ascending** therefore lands
+rows in foreign-key order without a topological sort. (Invariants come last
+because `declared_by` points at a decision.)
+
+That holds only to *millisecond* resolution. Within one millisecond ULIDs differ
+only in random bits, so two decisions recorded microseconds apart sort randomly
+against each other, and a reversal can legitimately precede the decision it
+supersedes. Rather than add a topological pass for a rare case, `import` sets
+`PRAGMA defer_foreign_keys = ON` inside its transaction: constraints are checked
+at COMMIT, so write order becomes a readability property instead of a correctness
+one. A genuinely dangling reference still fails and still rolls back the whole
+batch — it just fails at the end rather than mid-stream.
 
 ### `INSERT OR IGNORE` is the wrong primitive
 
@@ -83,7 +92,7 @@ JSONL. One JSON object per line, discriminated by `type`.
  "anchors":[{"file":"src/net/client.rs","symbol_path":"Client::send","node_kind":"function_item",
              "structural_hash":"…","line_span":[40,58],"recorded_at_sha":"a3f…"}],
  "binding":{"type":"commit","sha":"a3f…"},"ts":…}
-{"type":"invariant","id":"01K…","declared_by":"01K…","statement":"…","scope":"src/net","retired":0,"created_at_ms":…}
+{"type":"invariant","id":"01K…","declared_by":"01K…","statement":"…","scope":"src/net","retired":false,"created_at_ms":…}
 ```
 
 - `format` versions the file, independently of the store's `schema_version`.
@@ -93,8 +102,10 @@ JSONL. One JSON object per line, discriminated by `type`.
   `schema_version` is carried for diagnosis, not for gating.
 - The decision record is `StoredDecision`'s existing serialization plus a `type`
   tag. Reusing it means the export shape cannot drift from `dlog show`'s.
-- `staged` is never emitted; a record in a file is sealed by definition, and its
-  `binding` says which kind (§8.2).
+- `staged` is emitted, always `false`, and import **rejects** `true`. Dropping
+  the field would mean a second serialization of `StoredDecision` diverging from
+  `dlog show`'s; keeping it costs a few bytes a line and makes the file state the
+  invariant it is holding to (§8.2) instead of leaving it implicit.
 - `retired` is carried through even though nothing sets it today, so a future
   retire path does not need a format bump.
 

@@ -155,6 +155,7 @@ mod tests {
                         role: "r".into(),
                         model: "m".into(),
                         session_id: None,
+                        author: None,
                     },
                     conversation_id: None,
                     rationale: rationale.into(),
