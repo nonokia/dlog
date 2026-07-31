@@ -21,6 +21,7 @@ use crate::model::{Agent, Anchor, Binding, NewDecision, Rejected, StoredDecision
 const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("migrations/002_task_completed_at.sql"),
+    include_str!("migrations/003_decision_author.sql"),
 ];
 
 /// The schema version this binary understands. A store above it is refused
@@ -116,6 +117,60 @@ pub struct StrandedTask {
     pub instruction: Option<String>,
     pub staged_count: i64,
     pub oldest_staged_ms: i64,
+}
+
+/// A task row as it crosses the export/import boundary (#64): the stored columns
+/// and nothing derived. [`TaskRow`] is the *query* shape (it carries a computed
+/// `staged_count`); this is the *storage* shape, so it round-trips.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TaskRecord {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction: Option<String>,
+    pub created_at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<i64>,
+}
+
+/// An invariant row as it crosses the export/import boundary (#64). Unlike
+/// [`InvariantRow`] it carries `retired` and `created_at_ms`, because a
+/// serialization has to be lossless where a query can afford to summarise.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InvariantRecord {
+    pub id: String,
+    pub declared_by: String,
+    pub statement: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub retired: bool,
+    pub created_at_ms: i64,
+}
+
+/// Lower bound for `dlog export --since` (#64).
+///
+/// Two spellings of one ordering: ULIDs sort chronologically, so an id bound is
+/// a lexicographic comparison, while a date bound compares record time. Kept as
+/// separate variants rather than collapsed to milliseconds so `--since <id>`
+/// means *that decision onwards* exactly, instead of "everything in that
+/// millisecond".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SinceBound {
+    Id(String),
+    Ms(i64),
+}
+
+/// How many rows of each kind an import actually inserted. Records whose id the
+/// store already had are not counted here — [`Store::import_all`] returns that
+/// tally separately, because "already knew it" is the normal outcome of
+/// re-importing an overlapping file rather than a kind of write.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ImportCounts {
+    pub tasks: usize,
+    pub decisions: usize,
+    pub invariants: usize,
 }
 
 /// A handle to the SQLite-backed decision log.
@@ -344,9 +399,9 @@ impl Store {
         tx.execute(
             "INSERT INTO decision(
                 id, task_id, supersedes, agent_role, agent_model, agent_session_id,
-                conversation_id, rationale, rejected, caused_by, staged,
-                binding_type, binding_sha, created_at_ms)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, NULL, NULL, ?11)",
+                agent_author, conversation_id, rationale, rejected, caused_by,
+                staged, binding_type, binding_sha, created_at_ms)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, NULL, NULL, ?12)",
             params![
                 id_str,
                 decision.task_id,
@@ -354,6 +409,7 @@ impl Store {
                 decision.agent.role,
                 decision.agent.model,
                 decision.agent.session_id,
+                decision.agent.author,
                 decision.conversation_id,
                 decision.rationale,
                 rejected_json,
@@ -455,7 +511,8 @@ impl Store {
             .query_row(
                 "SELECT id, task_id, supersedes, agent_role, agent_model,
                         agent_session_id, conversation_id, rationale, rejected,
-                        caused_by, staged, binding_type, binding_sha, created_at_ms
+                        caused_by, staged, binding_type, binding_sha, created_at_ms,
+                        agent_author
                  FROM decision WHERE id = ?1",
                 params![id],
                 row_to_decision,
@@ -758,6 +815,249 @@ impl Store {
         Ok(ids)
     }
 
+    // ---- Export / import (#64) --------------------------------------------
+    //
+    // Sharing moves *sealed* rows only (§8.2): staging is one agent's live work
+    // area, and a decision that arrived from another machine was never this
+    // store's to seal.
+    //
+    // Everything below is ordered by id, which approximates FK order — a
+    // referenced row always existed first, and ULIDs sort chronologically. It is
+    // only an approximation: two ULIDs minted in the same millisecond sort
+    // randomly against each other. So the ordering is for readability, and
+    // `import_all` defers foreign keys rather than depending on it.
+
+    /// Sealed decision ids, ascending, optionally bounded below by `since`.
+    /// Staged rows are never returned; there is no flag that changes that.
+    pub fn sealed_decision_ids(&self, since: Option<&SinceBound>) -> rusqlite::Result<Vec<String>> {
+        // One statement with both bounds pre-resolved: a NULL bound passes every
+        // row, so `--since` and no `--since` share a query plan and a code path.
+        let (since_id, since_ms) = match since {
+            None => (None, None),
+            Some(SinceBound::Id(id)) => (Some(id.as_str()), None),
+            Some(SinceBound::Ms(ms)) => (None, Some(*ms)),
+        };
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM decision
+              WHERE staged = 0
+                AND (?1 IS NULL OR id >= ?1)
+                AND (?2 IS NULL OR created_at_ms >= ?2)
+              ORDER BY id",
+        )?;
+        let ids = stmt
+            .query_map(params![since_id, since_ms], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
+    }
+
+    /// A task's stored row, for export. `None` when the id is unknown.
+    pub fn get_task(&self, id: &str) -> rusqlite::Result<Option<TaskRecord>> {
+        self.conn
+            .query_row(
+                "SELECT id, parent_task_id, instruction, created_at_ms, completed_at_ms
+                 FROM task WHERE id = ?1",
+                params![id],
+                |r| {
+                    Ok(TaskRecord {
+                        id: r.get(0)?,
+                        parent_task_id: r.get(1)?,
+                        instruction: r.get(2)?,
+                        created_at_ms: r.get(3)?,
+                        completed_at_ms: r.get(4)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    /// Every invariant a decision declared, for export — retired ones included.
+    /// `dlog invariants` filters those out because a retired constraint is not
+    /// in effect; an export must still carry it, or importing would resurrect it.
+    pub fn invariant_records_declared_by(
+        &self,
+        decision_id: &str,
+    ) -> rusqlite::Result<Vec<InvariantRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, declared_by, statement, scope, retired, created_at_ms
+             FROM invariant WHERE declared_by = ?1 ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map(params![decision_id], |r| {
+                Ok(InvariantRecord {
+                    id: r.get(0)?,
+                    declared_by: r.get(1)?,
+                    statement: r.get(2)?,
+                    scope: r.get(3)?,
+                    retired: r.get::<_, i64>(4)? != 0,
+                    created_at_ms: r.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Whether a decision id is known. Used by `import` to tell "already have it"
+    /// from "dangling reference" *before* opening its transaction — safe to do
+    /// early because the main log is append-only, so a row that exists now cannot
+    /// stop existing (§7.2).
+    pub fn decision_exists(&self, id: &str) -> rusqlite::Result<bool> {
+        let found: Option<i64> = self
+            .conn
+            .query_row("SELECT 1 FROM decision WHERE id = ?1", params![id], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    /// Whether an invariant id is known.
+    pub fn invariant_exists(&self, id: &str) -> rusqlite::Result<bool> {
+        let found: Option<i64> = self
+            .conn
+            .query_row("SELECT 1 FROM invariant WHERE id = ?1", params![id], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    /// Insert records the store does not already have, in one transaction
+    /// (§7.2 — a half-applied import would leave holes in an append-only log
+    /// that nothing can repair). Returns what was inserted and how many records
+    /// were already known.
+    ///
+    /// Each row is preceded by an existence check and then inserted plainly,
+    /// rather than with `INSERT OR IGNORE`: that would also swallow CHECK and FK
+    /// violations, turning a malformed file into a silently short import. Here a
+    /// violated §8.2 invariant is an error the caller sees.
+    ///
+    /// Foreign keys are **deferred** to commit time for the duration. Rows
+    /// arrive in id order, which is FK order to millisecond resolution — but
+    /// ULIDs minted in the *same* millisecond sort randomly against each other,
+    /// so a decision that supersedes one recorded microseconds earlier could
+    /// legitimately sort first. Deferring means write order is a readability
+    /// property rather than a correctness one; a genuinely dangling reference
+    /// still fails, just at COMMIT, and still takes the whole batch with it.
+    pub fn import_all(
+        &self,
+        tasks: &[TaskRecord],
+        decisions: &[StoredDecision],
+        invariants: &[InvariantRecord],
+    ) -> rusqlite::Result<(ImportCounts, usize)> {
+        let mut counts = ImportCounts::default();
+        let mut skipped = 0usize;
+
+        let tx = self.conn.unchecked_transaction()?;
+        // Scoped to this transaction: SQLite resets it at COMMIT.
+        tx.pragma_update(None, "defer_foreign_keys", "ON")?;
+
+        for t in tasks {
+            if self.task_exists(&t.id)? {
+                skipped += 1;
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO task(id, parent_task_id, instruction, created_at_ms,
+                                  completed_at_ms)
+                 VALUES(?1, ?2, ?3, ?4, ?5)",
+                params![
+                    t.id,
+                    t.parent_task_id,
+                    t.instruction,
+                    t.created_at_ms,
+                    t.completed_at_ms
+                ],
+            )?;
+            counts.tasks += 1;
+        }
+
+        for d in decisions {
+            if self.decision_exists(&d.id)? {
+                skipped += 1;
+                continue;
+            }
+            let (binding_type, binding_sha) = match &d.binding {
+                Some(Binding::Commit { sha }) => ("commit", Some(sha.as_str())),
+                Some(Binding::None) => ("none", None),
+                // Rejected by validation long before here; the CHECK constraint
+                // is the backstop if it ever isn't.
+                None => ("none", None),
+            };
+            tx.execute(
+                "INSERT INTO decision(
+                    id, task_id, supersedes, agent_role, agent_model, agent_session_id,
+                    agent_author, conversation_id, rationale, rejected, caused_by,
+                    staged, binding_type, binding_sha, created_at_ms)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, ?13, ?14)",
+                params![
+                    d.id,
+                    d.task_id,
+                    d.supersedes,
+                    d.agent.role,
+                    d.agent.model,
+                    d.agent.session_id,
+                    d.agent.author,
+                    d.conversation_id,
+                    d.rationale,
+                    json_array_or_null(&d.rejected),
+                    json_array_or_null(&d.caused_by),
+                    binding_type,
+                    binding_sha,
+                    d.created_at_ms,
+                ],
+            )?;
+            {
+                let mut stmt = tx.prepare(
+                    "INSERT INTO anchor(
+                        decision_id, file, symbol_path, node_kind, structural_hash,
+                        line_start, line_end, recorded_at_sha)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                )?;
+                for a in &d.anchors {
+                    let (line_start, line_end) = match a.line_span {
+                        Some((s, e)) => (Some(s as i64), Some(e as i64)),
+                        None => (None, None),
+                    };
+                    stmt.execute(params![
+                        d.id,
+                        a.file,
+                        a.symbol_path,
+                        a.node_kind,
+                        a.structural_hash,
+                        line_start,
+                        line_end,
+                        a.recorded_at_sha,
+                    ])?;
+                }
+            }
+            counts.decisions += 1;
+        }
+
+        for i in invariants {
+            if self.invariant_exists(&i.id)? {
+                skipped += 1;
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO invariant(id, declared_by, statement, scope, retired,
+                                       created_at_ms)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    i.id,
+                    i.declared_by,
+                    i.statement,
+                    i.scope,
+                    i.retired as i64,
+                    i.created_at_ms
+                ],
+            )?;
+            counts.invariants += 1;
+        }
+
+        tx.commit()?;
+        Ok((counts, skipped))
+    }
+
     /// Store-wide status (§9.2).
     pub fn status(&self) -> rusqlite::Result<StoreStatus> {
         let staging_count =
@@ -843,6 +1143,9 @@ fn row_to_decision(r: &Row) -> rusqlite::Result<StoredDecision> {
             role: r.get(3)?,
             model: r.get(4)?,
             session_id: r.get(5)?,
+            // Appended after the frozen column list rather than inserted, so the
+            // v1 indices above keep meaning what they meant (schema v3, #64).
+            author: r.get(14)?,
         },
         conversation_id: r.get(6)?,
         rationale: r.get(7)?,
@@ -864,6 +1167,7 @@ mod tests {
             role: "implementer".into(),
             model: "claude-test".into(),
             session_id: Some("sess-1".into()),
+            author: None,
         }
     }
 
@@ -890,6 +1194,197 @@ mod tests {
 
     fn temp_db(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("dlog-store-{tag}-{}.db", Ulid::new()))
+    }
+
+    #[test]
+    fn author_round_trips_and_is_absent_when_unset() {
+        let store = Store::open_in_memory().unwrap();
+
+        let anonymous = store.stage_decision(&minimal("no author")).unwrap();
+        let d = store.get_decision(&anonymous).unwrap().unwrap();
+        assert!(d.agent.author.is_none());
+        // Absent, not empty: a solo store's output is byte-identical to before.
+        let json = serde_json::to_value(&d).unwrap();
+        assert!(json["agent"].get("author").is_none());
+
+        let mut attributed = minimal("with author");
+        attributed.agent.author = Some("lee@example.com".into());
+        let id = store.stage_decision(&attributed).unwrap();
+        let d = store.get_decision(&id).unwrap().unwrap();
+        assert_eq!(d.agent.author.as_deref(), Some("lee@example.com"));
+    }
+
+    #[test]
+    fn sealed_decision_ids_skip_staging_and_honour_the_bound() {
+        let store = Store::open_in_memory().unwrap();
+        let first = store.stage_decision(&minimal("first")).unwrap();
+        store.seal(&first, &Binding::None).unwrap();
+        let second = store.stage_decision(&minimal("second")).unwrap();
+        store.seal(&second, &Binding::None).unwrap();
+        let staged = store.stage_decision(&minimal("still working")).unwrap();
+
+        // Sorted, not "in the order they were recorded": two ULIDs minted in the
+        // same millisecond differ only in random bits, so mint order and id order
+        // are the same thing only across millisecond boundaries.
+        let all = store.sealed_decision_ids(None).unwrap();
+        let mut expected = vec![first, second];
+        expected.sort();
+        assert_eq!(all, expected, "ascending by id");
+        assert!(!all.contains(&staged), "staging never leaves the store");
+
+        // An id bound means "that decision onwards", inclusive.
+        let last = expected.last().unwrap().clone();
+        let from_last = store
+            .sealed_decision_ids(Some(&SinceBound::Id(last.clone())))
+            .unwrap();
+        assert_eq!(from_last, vec![last]);
+
+        // A time bound compares record time; 0 passes everything.
+        assert_eq!(
+            store.sealed_decision_ids(Some(&SinceBound::Ms(0))).unwrap(),
+            all
+        );
+        assert!(
+            store
+                .sealed_decision_ids(Some(&SinceBound::Ms(i64::MAX)))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn export_reads_carry_what_the_query_shapes_drop() {
+        let store = Store::open_in_memory().unwrap();
+        let parent = store.insert_task(None, Some("parent")).unwrap();
+        let child = store.insert_task(Some(&parent), Some("child")).unwrap();
+
+        let task = store.get_task(&child).unwrap().unwrap();
+        assert_eq!(task.parent_task_id.as_deref(), Some(parent.as_str()));
+        assert_eq!(task.instruction.as_deref(), Some("child"));
+        assert!(task.completed_at_ms.is_none());
+        store.complete_task(&child).unwrap();
+        assert!(
+            store
+                .get_task(&child)
+                .unwrap()
+                .unwrap()
+                .completed_at_ms
+                .is_some()
+        );
+        assert!(store.get_task("01NOSUCHTASK").unwrap().is_none());
+
+        let decision = store.stage_decision(&minimal("declares things")).unwrap();
+        let inv = store
+            .insert_invariant(&decision, "tokens never persist", Some("src"))
+            .unwrap();
+        // Retire it: `dlog invariants` stops showing it, but an export must still
+        // carry it or importing would resurrect a constraint that was dropped.
+        store
+            .conn
+            .execute(
+                "UPDATE invariant SET retired = 1 WHERE id = ?1",
+                params![inv],
+            )
+            .unwrap();
+        assert!(store.list_live_invariants().unwrap().is_empty());
+
+        let records = store.invariant_records_declared_by(&decision).unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(records[0].retired);
+        assert_eq!(records[0].scope.as_deref(), Some("src"));
+        assert!(records[0].created_at_ms > 0);
+    }
+
+    #[test]
+    fn import_all_is_atomic_and_skips_ids_it_already_has() {
+        let store = Store::open_in_memory().unwrap();
+
+        let task = TaskRecord {
+            id: "01TASK".into(),
+            parent_task_id: None,
+            instruction: Some("shared work".into()),
+            created_at_ms: 1,
+            completed_at_ms: Some(2),
+        };
+        let mut decision = {
+            let id = store.stage_decision(&minimal("template")).unwrap();
+            let d = store.get_decision(&id).unwrap().unwrap();
+            store.seal(&id, &Binding::None).unwrap();
+            d
+        };
+        decision.id = "01DECISION".into();
+        decision.task_id = Some(task.id.clone());
+        decision.staged = false;
+        decision.binding = Some(Binding::Commit { sha: "a3f".into() });
+        let invariant = InvariantRecord {
+            id: "01INV".into(),
+            declared_by: decision.id.clone(),
+            statement: "never log tokens".into(),
+            scope: None,
+            retired: false,
+            created_at_ms: 3,
+        };
+
+        let tasks = vec![task];
+        let decisions = vec![decision.clone()];
+        let invariants = vec![invariant];
+        let (counts, skipped) = store.import_all(&tasks, &decisions, &invariants).unwrap();
+        assert_eq!(counts.tasks, 1);
+        assert_eq!(counts.decisions, 1);
+        assert_eq!(counts.invariants, 1);
+        assert_eq!(skipped, 0);
+
+        // The decision arrives sealed, with its anchors and its binding intact.
+        let stored = store.get_decision("01DECISION").unwrap().unwrap();
+        assert!(!stored.staged);
+        assert_eq!(stored.binding, Some(Binding::Commit { sha: "a3f".into() }));
+        assert_eq!(stored.anchors, decision.anchors);
+
+        // Re-running writes nothing.
+        let (counts, skipped) = store.import_all(&tasks, &decisions, &invariants).unwrap();
+        assert_eq!(counts, ImportCounts::default());
+        assert_eq!(skipped, 3);
+
+        // A decision whose foreign key cannot resolve takes the whole batch with
+        // it — the command layer catches this first, the transaction is the
+        // backstop.
+        let mut orphan = decision.clone();
+        orphan.id = "01ORPHAN".into();
+        orphan.task_id = Some("01NOSUCHTASK".into());
+        assert!(store.import_all(&[], &[orphan], &[]).is_err());
+        assert!(!store.decision_exists("01ORPHAN").unwrap());
+    }
+
+    #[test]
+    fn import_does_not_depend_on_write_order() {
+        // Ids order FK edges only to millisecond resolution: two ULIDs minted in
+        // the same millisecond sort randomly, so a decision can legitimately sort
+        // *before* the one it supersedes. Foreign keys are deferred to commit for
+        // exactly this case — here forced by importing the pair backwards.
+        let store = Store::open_in_memory().unwrap();
+        let template = {
+            let id = store.stage_decision(&minimal("template")).unwrap();
+            let d = store.get_decision(&id).unwrap().unwrap();
+            store.seal(&id, &Binding::None).unwrap();
+            d
+        };
+
+        let mut original = template.clone();
+        original.id = "01ZORIGINAL".into();
+        original.staged = false;
+        original.binding = Some(Binding::None);
+
+        let mut reversal = template;
+        reversal.id = "01AREVERSAL".into();
+        reversal.supersedes = Some(original.id.clone());
+        reversal.staged = false;
+        reversal.binding = Some(Binding::None);
+
+        // Sorted ascending, the reversal comes first — before its referent.
+        let (counts, _) = store
+            .import_all(&[], &[reversal, original], &[])
+            .expect("deferred foreign keys let the referent arrive second");
+        assert_eq!(counts.decisions, 2);
     }
 
     #[test]
@@ -921,6 +1416,13 @@ mod tests {
                 [],
             )
             .unwrap();
+            conn.execute(
+                "INSERT INTO decision(id, agent_role, agent_model, rationale,
+                                      staged, binding_type, created_at_ms)
+                 VALUES('01OLDDEC', 'implementer', 'old-model', 'legacy call', 0, 'none', 1)",
+                [],
+            )
+            .unwrap();
         }
 
         let store = Store::open(&db).unwrap();
@@ -931,6 +1433,12 @@ mod tests {
         assert_eq!(open[0].id, "01OLDTASK");
         assert_eq!(open[0].instruction.as_deref(), Some("legacy work"));
         assert!(open[0].completed_at_ms.is_none());
+
+        // The v3 column exists and a decision predating it reads as authorless
+        // rather than failing (#64).
+        let old = store.get_decision("01OLDDEC").unwrap().unwrap();
+        assert_eq!(old.rationale, "legacy call");
+        assert!(old.agent.author.is_none());
 
         // Re-opening applies nothing further.
         drop(store);

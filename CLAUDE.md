@@ -155,12 +155,24 @@ blocked.
 Command surface: `dlog record`, `dlog why <file:line|symbol>`, `dlog show <id>`,
 `dlog context <path>`, `dlog trace <id>`, `dlog invariants`, `dlog search --text`, `dlog status`,
 `dlog bind <sha>`, `dlog commit`, `dlog hooks <install|uninstall>`,
-`dlog task <start|list|done>`. Full-text search uses SQLite FTS5.
+`dlog task <start|list|done>`, `dlog export --out`, `dlog import`. Full-text search uses SQLite FTS5.
 
 - **Task lifecycle (§7.1, §8.3):** `task start` → `record --task` → `task done` (the non-code seal).
   `task done` stamps `completed_at_ms` on first completion; `task list` returns open tasks in the
   compact form; `status` names *stranded tasks* — unfinished tasks that still hold staged decisions
   — so a lost task id is recoverable and staging left behind is attributable.
+
+- **Sharing (§7.2, §8.2, #64):** `export` / `import` move a log between checkouts as JSONL, and the
+  shared unit is **sealed decisions only** — export never writes a staged row, import rejects a file
+  containing one. No merge algorithm is needed: append-only is enforced by BEFORE UPDATE/DELETE
+  triggers (INSERT was never blocked) and ULIDs are globally unique, so import inserts unknown ids.
+  Ascending id order approximates FK order, but only to millisecond resolution (ULIDs minted in one
+  millisecond sort randomly), so `import_all` sets `defer_foreign_keys` rather than relying on it.
+  `--since` must carry the FK closure
+  (supersedes chains, task ancestry, declared invariants); `caused_by` has no FK and is reported as
+  `dangling_caused_by` instead. `record --author` (schema v3, optional) is the only human identity —
+  never read from git config. The store file itself is **not** shareable (SQLite locking is
+  unreliable on NFS/SMB/sync clients); the README says so.
 
 ## Scope status
 
@@ -168,5 +180,7 @@ Command surface: `dlog record`, `dlog why <file:line|symbol>`, `dlog show <id>`,
 automation (`commit` wrapper + post-commit `hooks` auto-seal); the task lifecycle
 (`task start`/`list`/`done` with stranded-task detection in `status`); versioned schema migrations;
 AST-node anchoring with query-time resolution for Rust, TypeScript/TSX, Go, PHP, Python, Java,
-and Ruby; context-budgeted output; and the agent instruction template (`templates/AGENTS.md`).
-Possible later work (not yet scoped): more tree-sitter grammars.
+and Ruby; context-budgeted output; sealed-only `export`/`import` with `record --author`; and the
+agent instruction template (`templates/AGENTS.md`).
+Possible later work (not yet scoped): more tree-sitter grammars; a remote store (libSQL) if
+export/import proves insufficient in practice; relevance ranking for large shared logs.

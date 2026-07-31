@@ -37,6 +37,8 @@ pub fn run() -> i32 {
         Command::Hooks(args) => commands::hooks::run(args),
         Command::Context(args) => commands::context::run(args),
         Command::Trace(args) => commands::trace::run(args),
+        Command::Export(args) => commands::export::run(args),
+        Command::Import(args) => commands::import::run(args),
     };
 
     match result {

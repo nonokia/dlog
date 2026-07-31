@@ -28,7 +28,13 @@ Every `record` carries your identity. Pass it as flags on each call:
 --agent-role implementer         # or reviewer, investigator, ...
 --agent-model <your-model-id>
 --agent-session <session-id>     # optional
+--author lee@example.com         # optional: the human you're working for
 ```
+
+`--author` matters when the log is shared between people — it is the only field
+that says *whose* agent made the call. It is never inferred (dlog does not read
+git config), so pass it if your project attributes decisions, and leave it off if
+it doesn't. `$DLOG_AUTHOR` is the fallback.
 
 Prefer the flags. Sandboxed harnesses (e.g. Claude Code) run each command in a
 fresh shell, so `export` doesn't persist — and prefixing every call with
@@ -262,6 +268,29 @@ they are emitted newest-first with shorter summaries and the envelope reports
 `trace` spends its budget nearest-root first and drops whole branches, so what
 comes back is always a connected piece of the DAG. Widen the budget, or
 `dlog show <id>` for the full record.
+
+## Sharing a log between checkouts (optional)
+
+If the team shares decisions, they travel as a JSONL file — there is no server
+and no sync:
+
+```bash
+dlog export --out decisions.jsonl                     # everything sealed
+dlog export --out decisions.jsonl --since 2026-07-01  # or --since <decision id>
+# {"path":"decisions.jsonl","format":1,"exported":{"tasks":3,"decisions":41,"invariants":5}}
+
+dlog import decisions.jsonl                           # on the other checkout
+# {"imported":{"tasks":3,"decisions":41,"invariants":5},"skipped_existing":0}
+```
+
+Only **sealed** decisions are shared: staging is your live work area, and a
+decision that arrived from someone else was never yours to seal. Re-importing is
+safe — ids the store already has are skipped and reported as `skipped_existing`.
+
+Imported decisions resolve against *your* working tree, so one about code you
+don't have degrades to `"resolution": "file_fallback"` rather than failing. If
+the response carries `dangling_caused_by`, the causal DAG you received is a
+fragment: `dlog trace` will stop early at those ids.
 
 ## Harness integration (optional)
 

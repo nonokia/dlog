@@ -94,6 +94,7 @@ mod tests {
                     role: "implementer".into(),
                     model: "claude-test".into(),
                     session_id: None,
+                    author: None,
                 },
                 conversation_id: None,
                 rationale: rationale.into(),
